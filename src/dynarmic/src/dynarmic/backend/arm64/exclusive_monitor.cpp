@@ -33,7 +33,24 @@ void ExclusiveMonitor::Unlock() {
 bool ExclusiveMonitor::CheckAndClear(std::size_t processor_id, VAddr address) {
     const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
 
-#ifdef ARCHITECTURE_arm64
+#if defined(ARCHITECTURE_arm64) && defined(_MSC_VER)
+    // MSVC has no __atomic builtins, but its standard library provides std::atomic_ref.
+    std::atomic_ref<VAddr> own{exclusive_addresses[processor_id]};
+    VAddr expected = masked_address;
+    if (own.load(std::memory_order_relaxed) != masked_address ||
+        !own.compare_exchange_strong(expected, INVALID_EXCLUSIVE_ADDRESS, std::memory_order_acq_rel)) {
+        return false;
+    }
+    for (VAddr& other_address : exclusive_addresses) {
+        std::atomic_ref<VAddr> other{other_address};
+        if (other.load(std::memory_order_relaxed) == masked_address) {
+            expected = masked_address;
+            other.compare_exchange_strong(expected, INVALID_EXCLUSIVE_ADDRESS,
+                                          std::memory_order_acq_rel);
+        }
+    }
+    return true;
+#elif defined(ARCHITECTURE_arm64)
     // std::atomic_ref is missing from Android's libc++, so use the equivalent compiler builtins.
     VAddr& own = exclusive_addresses[processor_id];
     VAddr expected = masked_address;
@@ -69,7 +86,11 @@ bool ExclusiveMonitor::CheckAndClear(std::size_t processor_id, VAddr address) {
 void ExclusiveMonitor::Clear() {
 #ifdef ARCHITECTURE_arm64
     for (VAddr& address : exclusive_addresses) {
+#ifdef _MSC_VER
+        std::atomic_ref<VAddr>{address}.store(INVALID_EXCLUSIVE_ADDRESS, std::memory_order_release);
+#else
         __atomic_store_n(&address, INVALID_EXCLUSIVE_ADDRESS, __ATOMIC_RELEASE);
+#endif
     }
 #else
     Lock();
@@ -79,7 +100,9 @@ void ExclusiveMonitor::Clear() {
 }
 
 void ExclusiveMonitor::ClearProcessor(std::size_t processor_id) {
-#ifdef ARCHITECTURE_arm64
+#if defined(ARCHITECTURE_arm64) && defined(_MSC_VER)
+    std::atomic_ref<VAddr>{exclusive_addresses[processor_id]}.store(INVALID_EXCLUSIVE_ADDRESS, std::memory_order_release);
+#elif defined(ARCHITECTURE_arm64)
     __atomic_store_n(&exclusive_addresses[processor_id], INVALID_EXCLUSIVE_ADDRESS, __ATOMIC_RELEASE);
 #else
     Lock();
