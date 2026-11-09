@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cstdlib>
 
 #include "core/core.h"
@@ -17,6 +18,19 @@
 #include "core/hle/kernel/svc_version.h"
 
 namespace Kernel::Svc {
+
+namespace {
+
+// The remote memory comes out of the application pool, so only the application's totals leave
+// it out. Other processes, and any total smaller than it, are returned as they are.
+u64 WithoutNx2RemoteMemory(const KProcess& process, u64 total) {
+    if (!process.IsApplication()) {
+        return total;
+    }
+    return total - (std::min<u64>)(total, KSystemControl::Nx2RemoteMemorySize());
+}
+
+} // namespace
 
 /// Gets system/memory information for the current process
 Result GetInfo(Core::System& system, u64* result, InfoType info_id_type, Handle handle, u64 info_sub_id) {
@@ -118,8 +132,8 @@ Result GetInfo(Core::System& system, u64* result, InfoType info_id_type, Handle 
             *result = process->GetPageTable().GetStackRegionSize();
             R_SUCCEED();
         case InfoType::TotalMemorySize:
-            *result = process->GetTotalUserPhysicalMemorySize(system.Kernel()) -
-                      KSystemControl::Nx2RemoteMemorySize();
+            *result = WithoutNx2RemoteMemory(
+                *process, process->GetTotalUserPhysicalMemorySize(system.Kernel()));
             R_SUCCEED();
         case InfoType::UsedMemorySize:
             *result = process->GetUsedUserPhysicalMemorySize(system.Kernel());
@@ -137,8 +151,8 @@ Result GetInfo(Core::System& system, u64* result, InfoType info_id_type, Handle 
             *result = GetInteger(process->GetProcessLocalRegionAddress());
             R_SUCCEED();
         case InfoType::TotalNonSystemMemorySize:
-            *result = process->GetTotalNonSystemUserPhysicalMemorySize(system.Kernel()) -
-                      KSystemControl::Nx2RemoteMemorySize();
+            *result = WithoutNx2RemoteMemory(
+                *process, process->GetTotalNonSystemUserPhysicalMemorySize(system.Kernel()));
             R_SUCCEED();
         case InfoType::UsedNonSystemMemorySize:
             *result = process->GetUsedNonSystemUserPhysicalMemorySize(system.Kernel());
