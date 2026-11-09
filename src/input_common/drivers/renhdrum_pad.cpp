@@ -16,6 +16,9 @@
 #include <renhdrum.h>
 
 #include "common/dynamic_library.h"
+#ifdef _WIN32
+#include "common/fs/path_util.h"
+#endif
 #include "common/logging.h"
 #include "common/settings.h"
 #include "common/thread.h"
@@ -68,7 +71,10 @@ const RenHDrumApi& Api() {
     static const RenHDrumApi api = [] {
         RenHDrumApi a;
 #if defined(_WIN32)
-        constexpr const char* name = "renhdrum.dll";
+        // Only the copy next to the executable. With a bare file name LoadLibrary also searched
+        // the current directory and PATH, so any renhdrum.dll there ran inside the emulator.
+        const std::string exe_dll = (Common::FS::GetExeDirectory() / "renhdrum.dll").string();
+        const char* const name = exe_dll.c_str();
 #elif defined(__APPLE__)
         constexpr const char* name = "librenhdrum.dylib";
 #else
