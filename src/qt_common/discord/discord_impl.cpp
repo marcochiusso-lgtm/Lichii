@@ -6,6 +6,9 @@
 
 #include <chrono>
 #include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include <QEventLoop>
 #include <boost/algorithm/string/replace.hpp>
@@ -74,6 +77,11 @@ static constexpr char DEFAULT_DISCORD_IMAGE[] =
     "https://git.eden-emu.dev/eden-emu/eden/raw/branch/master/dist/qt_themes/default/icons/256x256/"
     "eden.png";
 
+// Boxart URL found for each title, empty when no repository has one. Update() runs on the UI
+// thread and the lookup makes blocking HTTPS requests, so each title is only looked up once.
+// Only the UI thread touches this, so it needs no lock.
+static std::unordered_map<std::string, std::string> boxart_cache;
+
 void DiscordImpl::UpdateGameStatus(std::string_view game_url, bool has_boxart) {
     const std::string url = std::string{has_boxart ? game_url : DEFAULT_DISCORD_IMAGE};
     s64 start_time = std::chrono::duration_cast<std::chrono::seconds>(
@@ -95,6 +103,11 @@ void DiscordImpl::UpdateGameStatus(std::string_view game_url, bool has_boxart) {
 void DiscordImpl::Update() {
     if (system.IsPoweredOn()) {
         system.GetAppLoader().ReadTitle(game_title);
+
+        if (const auto it = boxart_cache.find(game_title); it != boxart_cache.end()) {
+            UpdateGameStatus(it->second, !it->second.empty());
+            return;
+        }
 
         // Used to format icon URL for game boxart repositories
         const std::string icon_name = GetGameString(game_title);
@@ -138,6 +151,7 @@ void DiscordImpl::Update() {
             }
         }
 
+        boxart_cache.emplace(game_title, game_url);
         UpdateGameStatus(game_url, has_boxart);
         return;
     }
