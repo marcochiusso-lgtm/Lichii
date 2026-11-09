@@ -667,8 +667,8 @@ void TextureCache<P>::TickFrame() {
     // couple of frames; the dead ones piled up, the cache went over the card's budget, the driver
     // moved video memory into system RAM and on an 8 GB card the device was lost after ~1-4 min.
     // The collector can't keep up there: it waits 10-50 frames and downloads each GPU-written
-    // image first. These targets never held guest data, so they're marked stale instead, the
-    // way the collector handles images it doesn't download.
+    // image first. Only targets the GPU never wrote are deleted here; they never held guest data,
+    // so they're marked stale instead, the way the collector handles images it doesn't download.
     if (const u64 rt_evict = RtEvictPressureFrames();
         rt_evict != 0 && total_used_memory > expected_memory) {
         // At most this many deletions a frame, so a long queue doesn't turn into one long frame
@@ -703,6 +703,13 @@ void TextureCache<P>::TickFrame() {
                 } else {
                     image.flags &= ~ImageFlagBits::TransientTarget;
                 }
+                continue;
+            }
+            if (True(image.flags & ImageFlagBits::GpuModified)) {
+                // The GPU has rendered into it since, so it may now hold the only copy of guest
+                // data. Deleting it here would drop that data without a download; leave it to the
+                // collector, which downloads such images before deleting them.
+                image.flags &= ~ImageFlagBits::TransientTarget;
                 continue;
             }
             MarkStale(image); // before UntrackImage (see MarkStale)
