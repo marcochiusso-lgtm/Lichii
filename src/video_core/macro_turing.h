@@ -24,7 +24,16 @@ public:
         Word pc;
         std::size_t consumed;
         std::string_view error;
+        /// The call wrote something outside its own registers (an emitted method, a DMA read or
+        /// a data RAM word), so replaying it from the start would repeat that write. Both engines
+        /// report it: the interpreter from its write list and emit calls, the JIT from the same
+        /// points in its generated code.
+        bool side_effects{};
     };
+
+    /// A call whose entry point is past the uploaded macro memory. Nothing of it ran, so the
+    /// call can be replayed: the JIT uses this to fall back to the interpreter below.
+    static constexpr std::string_view OutsideCodeError{"instruction outside uploaded RAM"};
 
     // One instruction's fields, decoded once and reused while its words stay the same (macro
     // code runs thousands of times a frame; decoding it every time was most of the interpreter).
@@ -85,6 +94,7 @@ public:
         Word pc = start, loop_count{}, loop_start{}, loop_end{};
         std::size_t consumed{};
         bool end_next{}, stopped{};
+        bool emitted{};
         std::string_view error;
         const auto fail = [&](std::string_view message) { if (error.empty()) error = message; };
         if (decoded.size() < code.size() / 3) decoded.resize(code.size() / 3);
@@ -94,7 +104,7 @@ public:
         data_ram_writes.clear();
         for (Word steps = 0; steps < 1000000; ++steps) {
             if (static_cast<std::size_t>(pc) * 3 + 2 >= code.size()) {
-                fail("instruction outside uploaded RAM");
+                fail(OutsideCodeError);
                 break;
             }
             const std::array<Word, 3> bits{code[pc * 3 + 2], code[pc * 3 + 1], code[pc * 3]};
@@ -240,18 +250,21 @@ public:
                 }
                 if (d.out_emit[lane]) {
                     const Word value = output(d.out_emit[lane]);
+                    emitted = true;
                     if (error.empty() && !emit(method, value)) fail("unsupported emitted method");
                     method += increment;
                 }
             }
             if (!error.empty()) break;
-            if (end_next || stopped) return {true, pc, consumed, {}};
+            if (end_next || stopped) {
+                return {true, pc, consumed, {}, emitted || !data_ram_writes.empty()};
+            }
             end_next = d.end && !branch_cancels_end;
             if (loop_count && pc == loop_end) { --loop_count; next_pc = loop_start + 1; }
             pc = next_pc;
         }
         if (error.empty()) error = "instruction limit exceeded";
-        return {false, pc, consumed, error};
+        return {false, pc, consumed, error, emitted || !data_ram_writes.empty()};
     }
 
     /// What a call from `start` can do on any path through the code (each branch either way,

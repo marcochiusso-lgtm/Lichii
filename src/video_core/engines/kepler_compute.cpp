@@ -1614,8 +1614,28 @@ void KeplerCompute::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& s
         macro.native_jit = std::make_shared<TuringMacroJit>();
     }
     macro.native_jit->Prepare(macro.native_code, macro.native_code_generation);
-    const auto result = macro.native_jit->Execute(
+    auto result = macro.native_jit->Execute(
         start, fs.parameters, std::span<u32>{*macro.native_interpreter.active_dram}, read, emit);
+    if (!result.success && !result.side_effects &&
+        result.error == TuringMacroInterpreter::OutsideCodeError) {
+        // As in Maxwell3D::FrontRunMacro: replay a call that wrote nothing on the interpreter
+        // rather than drop it, reading the live FIFO so FIFOed DMA reads land in it.
+        std::vector<u32> before_replay{fs.parameters};
+        const auto replayed = macro.native_interpreter.Execute(
+            macro.native_code, start, fs.parameters, read, emit);
+        if (replayed.success) {
+            result = replayed;
+            static std::atomic<u32> fallbacks{};
+            if (fallbacks.fetch_add(1, std::memory_order_relaxed) % 4096 == 0) {
+                LOG_WARNING(HW_GPU,
+                            "Native MME (split front): the compiled program rejected compute "
+                            "start={:#x}; ran it on the interpreter ({} calls so far)",
+                            start, fallbacks.load(std::memory_order_relaxed));
+            }
+        } else {
+            fs.parameters = std::move(before_replay);
+        }
+    }
 #else
     const auto result =
         macro.native_interpreter.Execute(macro.native_code, start, fs.parameters, read, emit);

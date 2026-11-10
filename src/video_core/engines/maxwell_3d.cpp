@@ -1652,8 +1652,35 @@ void Maxwell3D::FrontRunMacro(Core::System& system, VideoCommon::GpuSplit& split
             engine.native_jit = std::make_shared<TuringMacroJit>();
         }
         engine.native_jit->Prepare(engine.native_code, engine.native_code_generation);
-        const auto result = engine.native_jit->Execute(
+        auto result = engine.native_jit->Execute(
             start, fs.parameters, std::span<u32>{native_data_ram}, read, emit);
+        if (!result.success && !result.side_effects &&
+            result.error == TuringMacroInterpreter::OutsideCodeError) {
+            // The compiled program disagrees with the uploaded words about where this entry
+            // point is and rejected the call (seen with the GPU thread split on Ocarina of Time,
+            // where every macro failed and nothing drew). Run it on the interpreter instead: it
+            // decodes the words as they are, and a macro that really is outside the uploaded RAM
+            // fails there too and is reported as before. Only calls that wrote nothing outside
+            // their registers are replayed.
+            // MME_DMA_READ_FIFOED appends to fs.parameters through emit, so the replay reads the
+            // live FIFO: the interpreter takes that vector and the words land in the same place
+            // the JIT's call would have put them. A replay that fails too is undone.
+            std::vector<u32> before_replay{fs.parameters};
+            const auto replayed = engine.native_interpreter.Execute(
+                engine.native_code, start, fs.parameters, read, emit);
+            if (replayed.success) {
+                result = replayed;
+                static std::atomic<u32> fallbacks{};
+                if (fallbacks.fetch_add(1, std::memory_order_relaxed) % 4096 == 0) {
+                    LOG_WARNING(HW_GPU,
+                                "Native MME (split front): the compiled program rejected start={:#x}; "
+                                "ran it on the interpreter ({} calls so far)",
+                                start, fallbacks.load(std::memory_order_relaxed));
+                }
+            } else {
+                fs.parameters = std::move(before_replay);
+            }
+        }
 #else
         const auto result =
             engine.native_interpreter.Execute(engine.native_code, start, fs.parameters, read, emit);

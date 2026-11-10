@@ -44,7 +44,7 @@ public:
         std::uint8_t end_next;
         std::uint8_t stopped;
         std::uint8_t cancel_end;
-        std::uint8_t pad;
+        std::uint8_t side_effects;
         Word scratch_x;
         Word scratch_y;
         const Word* params;
@@ -71,6 +71,7 @@ public:
         StepLimit,
     };
 
+    /// Message for an error code from Result::error, for logs.
     static std::string_view ErrorText(Word error) {
         constexpr std::array<std::string_view, 13> texts{
             "",
@@ -84,7 +85,7 @@ public:
             "data RAM write out of bounds",
             "invalid output selector",
             "unsupported emitted method",
-            "instruction outside uploaded RAM",
+            TuringMacroInterpreter::OutsideCodeError,
             "instruction limit exceeded",
         };
         return error < texts.size() ? texts[error] : "unknown";
@@ -99,6 +100,9 @@ public:
         compiled_generation = generation;
     }
 
+    /// Runs the compiled program from instruction `start` to its end, a stop or a failure.
+    /// @param parameters Load FIFO; MME_DMA_READ_FIFOED appends to it through `emit`.
+    /// @param data_ram   MME data RAM the program reads and writes.
     template <typename Read, typename Emit>
     Result Execute(Word start, std::vector<Word>& parameters, std::span<Word> data_ram, Read read,
                    Emit emit) {
@@ -108,7 +112,7 @@ public:
         state.loop_count = state.loop_start = state.loop_end = 0;
         state.consumed = 0;
         state.fail_pc = 0;
-        state.end_next = state.stopped = state.cancel_end = 0;
+        state.end_next = state.stopped = state.cancel_end = state.side_effects = 0;
         state.start = start;
         state.steps = 1000000;
         state.params = parameters.data();
@@ -120,10 +124,11 @@ public:
         state.emit = &Thunks<Read, Emit>::CallEmit;
         state.read = &Thunks<Read, Emit>::CallRead;
         const Word error = program->entry(&state);
+        const bool side_effects = state.side_effects != 0;
         if (error == None) {
-            return {true, state.fail_pc, state.consumed, {}};
+            return {true, state.fail_pc, state.consumed, {}, side_effects};
         }
-        return {false, state.fail_pc, state.consumed, ErrorText(error)};
+        return {false, state.fail_pc, state.consumed, ErrorText(error), side_effects};
     }
 
 private:
@@ -131,13 +136,16 @@ private:
     struct Thunks {
         Read& read;
         Emit& emit;
+        /// Emits one method write out of the program, and records that the call wrote.
         static bool CallEmit(State* state, Word method, Word value) {
+            state->side_effects = 1;
             const bool ok = static_cast<Thunks*>(state->user)->emit(method, value);
             // MME_DMA_READ_FIFOED appends to the FIFO from inside the emit.
             state->params = state->fifo->data();
             state->params_size = static_cast<Word>(state->fifo->size());
             return ok;
         }
+        /// Reads a register the program asked for through the MME read operand.
         static Word CallRead(State* state, Word address) {
             return static_cast<Thunks*>(state->user)->read(address);
         }
@@ -640,6 +648,7 @@ private:
                 jae(fail_dwrite, T_NEAR);
                 mov(rax, qword[st + offsetof(State, dram)]);
                 mov(dword[rax + rcx * 4], edx);
+                mov(byte[st + offsetof(State, side_effects)], 1);
                 xor_(eax, eax);
                 return;
             default:
