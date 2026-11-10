@@ -138,7 +138,8 @@ enum class PinnedRole : u32 { GpuFront, GpuBack, GuestCore };
 /// The experimental pin_gpu_threads setting (Windows and Linux): the split GPU thread's front and
 /// back each get a physical performance core of their own and the guest cores keep off those two.
 /// Skipped, with one log line, on CPUs with too few cores, with EDEN_HYBRID_CORES=0 (Windows), and
-/// on other hosts.
+/// on other hosts. On Linux, EDEN_GPU_PIN_EXCLUSIVE=1 also moves the other threads of the process
+/// off the GPU threads' two cores (a thread allowed only on those cores is left as it is).
 void PinCurrentThread(PinnedRole role);
 
 void RefreshThreadPolicies();

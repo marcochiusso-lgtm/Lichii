@@ -550,6 +550,7 @@ void SelectCurrentThreadCpuSets(const std::vector<ULONG>& ids) {
 #endif
 
 #if defined(__linux__) && !defined(__ANDROID__)
+#include <dirent.h>
 #include <fstream>
 #include <optional>
 
@@ -609,6 +610,42 @@ std::vector<Common::LogicalProcessor> LinuxProcessors() {
                               static_cast<u8>((std::min)(capacity, 1024U) >> 3)});
     }
     return processors;
+}
+
+// EDEN_GPU_PIN_EXCLUSIVE=1: when the GPU threads are pinned, move the other threads of the process
+// off their cores; a thread allowed only on those cores is left as it is. Threads started later
+// inherit the mask of the thread that starts them, so they stay off too (except those the pinned
+// threads start). Other processes are not affected.
+void KeepOtherThreadsOff(const Common::GpuThreadPinning& plan) {
+    cpu_set_t reserved;
+    CPU_ZERO(&reserved);
+    for (const std::vector<u32>* cpus : {&plan.front, &plan.back}) {
+        for (const u32 cpu : *cpus) {
+            CPU_SET(cpu, &reserved);
+        }
+    }
+    DIR* const tasks = opendir("/proc/self/task");
+    if (tasks == nullptr) {
+        return;
+    }
+    size_t moved = 0;
+    while (const dirent* entry = readdir(tasks)) {
+        const pid_t tid = static_cast<pid_t>(std::strtol(entry->d_name, nullptr, 10));
+        cpu_set_t mask;
+        if (tid <= 0 || sched_getaffinity(tid, sizeof(mask), &mask) != 0) {
+            continue;
+        }
+        cpu_set_t kept;
+        CPU_XOR(&kept, &mask, &reserved);
+        CPU_AND(&kept, &kept, &mask);
+        if (CPU_COUNT(&kept) != 0 && !CPU_EQUAL(&kept, &mask) &&
+            sched_setaffinity(tid, sizeof(kept), &kept) == 0) {
+            ++moved;
+        }
+    }
+    closedir(tasks);
+    LOG_INFO(Common, "GPU thread pinning: {} other threads moved off the GPU threads' cores",
+             moved);
 }
 
 void SetCurrentThreadAffinity(const std::vector<u32>& cpus) {
@@ -769,6 +806,10 @@ void PinCurrentThread(PinnedRole role) {
                      "GPU thread pinning: front and back on a physical core each, guest cores on "
                      "the other {} performance cores ({} logical processors)",
                      result.performance_cores - 2, result.guest.size());
+            if (const char* text = std::getenv("EDEN_GPU_PIN_EXCLUSIVE");
+                text != nullptr && std::strtol(text, nullptr, 10) != 0) {
+                KeepOtherThreadsOff(result);
+            }
         }
         return result;
     }();
