@@ -208,6 +208,9 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, use_disk_shader_cache, tr("Use persistent pipeline cache"),
            tr("Allows saving shaders to storage for faster loading on following game "
               "boots.\nDisabling it is only intended for debugging."));
+    INSERT(Settings, use_directstorage, tr("Use DirectStorage for game file reads"),
+           tr("Windows only: large game file reads go through a DirectStorage queue "
+              "(dstorage.dll) when it is available, with a fallback to regular reads otherwise."));
     INSERT(
         Settings, use_asynchronous_gpu_emulation, tr("Use asynchronous GPU emulation"),
         tr("Uses an extra CPU thread for rendering.\nThis option should always remain enabled."));

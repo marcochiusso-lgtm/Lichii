@@ -674,6 +674,17 @@ struct Values {
         linkage, true, "use_vulkan_driver_pipeline_cache", Category::RendererAdvanced,
         Specialization::Default};
 
+    // Windows only: game file reads of at least 64 KiB go through a DirectStorage queue
+    // (dstorage.dll loaded at run time), falling back to regular reads when it is unavailable.
+    SwitchableSetting<bool> use_directstorage{linkage,
+#ifdef _WIN32
+                                              true,
+#else
+                                              false,
+#endif
+                                              "use_directstorage",
+                                              Category::RendererAdvanced};
+
     SwitchableSetting<NativeAsyncDraws> native_async_draws{linkage,
                                                            NativeAsyncDraws::Wait,
                                                            "native_async_draws",

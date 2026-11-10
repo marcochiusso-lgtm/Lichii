@@ -275,4 +275,34 @@ if(ANDROID)
     target_link_libraries(common PRIVATE android)
 endif()
 
+# DirectStorage (Windows): async NVMe reads for game files. The Microsoft.Direct3D.DirectStorage
+# NuGet package is downloaded at configure time for its headers. The runtime DLLs are not staged
+# next to the executable; dstorage.dll is loaded at run time when available, and reads fall back
+# to std::fread when it is missing or a request fails.
+cmake_dependent_option(ENABLE_DIRECTSTORAGE "Enable DirectStorage for game file reads" ON
+                       "WIN32 AND MSVC AND ARCHITECTURE_x86_64" OFF)
+if (ENABLE_DIRECTSTORAGE)
+    set(DIRECTSTORAGE_VERSION "1.3.0")
+    set(DIRECTSTORAGE_URL
+        "https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.directstorage/${DIRECTSTORAGE_VERSION}/microsoft.direct3d.directstorage.${DIRECTSTORAGE_VERSION}.nupkg")
+    set(DIRECTSTORAGE_SHA512
+        "589a83194e9e05654523b9ca10401982d235dbaa991c8535807d5b9f851d877281417d79a0210f77b46c0f65114f805f4a12f04b7bdb3de8a00fe20c78def791")
+    set(DIRECTSTORAGE_ROOT "${CMAKE_BINARY_DIR}/_deps/directstorage")
+    if (NOT EXISTS "${DIRECTSTORAGE_ROOT}/native/include/dstorage.h")
+        file(DOWNLOAD "${DIRECTSTORAGE_URL}" "${CMAKE_BINARY_DIR}/_deps/directstorage.nupkg"
+             EXPECTED_HASH "SHA512=${DIRECTSTORAGE_SHA512}"
+             STATUS directstorage_status)
+        list(GET directstorage_status 0 directstorage_error)
+        if (directstorage_error)
+            message(FATAL_ERROR "DirectStorage SDK download failed: ${directstorage_status}")
+        endif()
+        file(ARCHIVE_EXTRACT INPUT "${CMAKE_BINARY_DIR}/_deps/directstorage.nupkg"
+             DESTINATION "${DIRECTSTORAGE_ROOT}")
+    endif()
+    target_sources(common PRIVATE fs/dstorage_queue.cpp fs/dstorage_queue.h)
+    target_include_directories(common PUBLIC "${DIRECTSTORAGE_ROOT}/native/include")
+    target_compile_definitions(common PUBLIC LICHII_DIRECTSTORAGE)
+    message(STATUS "DirectStorage ${DIRECTSTORAGE_VERSION} headers: ${DIRECTSTORAGE_ROOT}/native/include")
+endif()
+
 create_target_directory_groups(common)

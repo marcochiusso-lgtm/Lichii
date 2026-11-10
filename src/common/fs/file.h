@@ -285,6 +285,12 @@ public:
         if (!IsOpen()) {
             return 0;
         }
+#ifdef LICHII_DIRECTSTORAGE
+        if (const size_t bytes = ReadSpanDirectStorage(data.data(), data.size() * sizeof(T));
+            bytes != 0) {
+            return bytes / sizeof(T);
+        }
+#endif
         return std::fread(data.data(), sizeof(T), data.size(), file);
     }
 
@@ -450,6 +456,13 @@ public:
     [[nodiscard]] s64 Tell() const;
 
 private:
+#ifdef LICHII_DIRECTSTORAGE
+    /// Reads size_bytes at the current file position through the DirectStorage queue and
+    /// advances the file pointer on success. Returns the bytes read, or 0 when DirectStorage is
+    /// disabled/unavailable or the read failed (the caller then uses std::fread).
+    [[nodiscard]] size_t ReadSpanDirectStorage(void* data, size_t size_bytes) const;
+#endif
+
     std::filesystem::path file_path;
     FileAccessMode file_access_mode{};
     FileType file_type{};
