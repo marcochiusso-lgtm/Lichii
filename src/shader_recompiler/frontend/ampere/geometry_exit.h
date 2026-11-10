@@ -177,6 +177,13 @@ GeometryExitEnvelope AnalyzeGeometryExit(const Code& code) {
             if (value != 255)
                 for (u32 i = 0; i < components; ++i) read_register(value + i);
             read_register(bits(index, 64, 8));
+        } else if (opcode == 0x321) {
+            // ALD: loads 1-4 components of the vertex in operand b (Unreal's LUT geometry shader).
+            read_register(bits(index, 24, 8));
+            read_register(bits(index, 32, 8));
+            const u32 dest = bits(index, 16, 8), components = bits(index, 74, 2) + 1;
+            if (dest != 255)
+                for (u32 i = 0; i < components; ++i) write_register(dest + i);
         } else if (family == 0x00c && form != 0 && !bits(index, 72, 1)) {
             read_sources(false);
             read_predicate(bits(index, 87, 3));

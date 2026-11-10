@@ -24,6 +24,7 @@ Users report game bugs with Lichii logs (`eden_log.txt`, `eden_log.txt.old`). Ea
 | 04005B902517C000 | Kirby Air Riders Global Test Ride |
 | 040057C02159A000 | Nintendo Switch 2 Welcome Tour |
 | 040004F027560000 | Orbitals Global Friends Pass |
+| 040032B023CA4000 | Orbitals |
 | 0400380020056000 | Raiders |
 | 0400D1D02399A000 | The Duskbloods network test |
 | 0400486024DEC000 | The Legend of Zelda: Ocarina of Time |
