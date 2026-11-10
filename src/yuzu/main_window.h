@@ -517,6 +517,9 @@ private:
     MultiplayerState* multiplayer_state = nullptr;
     bool use_recommended_mkw_settings = false;
     bool asked_recommended_mkw_settings = false;
+    /// The speed limit the game started with, restored at shutdown: the hotkey, turbo and slow
+    /// modes change it only for the session, and the setting the user saved stays as it was.
+    bool use_speed_limit_at_boot = true;
 
     GRenderWindow* render_window = nullptr;
     GameList* game_list = nullptr;
