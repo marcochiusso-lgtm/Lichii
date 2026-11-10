@@ -4,6 +4,9 @@
 // SPDX-FileCopyrightText: 2014 Dolphin Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <fmt/ranges.h>
 #include <libusb.h>
 
@@ -329,7 +332,21 @@ bool GCAdapter::GetGCEndpoint(libusb_device* device) {
 
 Common::Input::DriverResult GCAdapter::SetVibration(
     const PadIdentifier& identifier, const Common::Input::VibrationStatus& vibration) {
-    const auto mean_amplitude = (vibration.low_amplitude + vibration.high_amplitude) * 0.5f;
+    // EDEN_GC_RUMBLE_BOOST=<factor> scales the requested strength before it becomes on/off
+    // pulses. GameCube motors are on/off only: HD rumble that Switch 2 titles send at 0.02-0.06
+    // (Ocarina of Time) otherwise maps to 1/8 duty, which a GC motor can't spin up on. A large
+    // factor (e.g. 1000) turns any non-zero rumble into full power. Unset or 1 keeps the
+    // original behaviour.
+    static const float rumble_boost = [] {
+        const char* value = std::getenv("EDEN_GC_RUMBLE_BOOST");
+        const float boost = value != nullptr ? std::strtof(value, nullptr) : 1.0f;
+        if (value != nullptr) {
+            LOG_INFO(Input, "EDEN_GC_RUMBLE_BOOST: {}", boost);
+        }
+        return std::isfinite(boost) && boost > 0.0f ? boost : 1.0f;
+    }();
+    const auto mean_amplitude = (std::min)(
+        (vibration.low_amplitude + vibration.high_amplitude) * 0.5f * rumble_boost, 1.0f);
     const auto processed_amplitude =
         static_cast<u8>((mean_amplitude + std::pow(mean_amplitude, 0.3f)) * 0.5f * 0x8);
 
