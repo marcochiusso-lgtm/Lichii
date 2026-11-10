@@ -412,6 +412,7 @@ struct System::Impl {
                              params.program_index);
         Settings::SetCurrentProgramIsSwitch2(switch2_program);
         Settings::SetAstcRecompressionOverride(std::nullopt);
+        Settings::SetGameHandheldOverride(false);
 
         // Switch 2 titles size their heap from the total memory and need the 12 GiB layout. Set it
         // as a per-game value, so RestoreGlobalState brings back the configured layout afterwards.
@@ -560,6 +561,7 @@ struct System::Impl {
 
         // Reset per-game flags
         Settings::values.use_squashed_iterated_blend = false;
+        Settings::SetGameHandheldOverride(false);
 
         is_powered_on = false;
         exit_locked = false;

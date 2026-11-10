@@ -299,6 +299,12 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "(flickering effects) and copy far more data back from the GPU."));
     INSERT(Settings, use_asynchronous_shaders, tr("Enable asynchronous shader compilation"),
            tr("May reduce shader stutter."));
+    INSERT(Settings, nx2_auto_resolution,
+           tr("Automatic resolution (Switch 2 games, docked)"),
+           tr("While the game runs well below its frame rate, it renders at its handheld "
+              "resolution (Ocarina of Time: 1080p instead of 1440p), and goes back to the full "
+              "resolution once it keeps up.\n"
+              "Controllers and the output stay in docked mode."));
     INSERT(Settings, gpu_clock, tr("GPU Clocks"),
            tr("Makes the game believe GPU work finishes faster than it does, so it stops lowering "
               "resolution and render distance to fit the Switch's clocks."));

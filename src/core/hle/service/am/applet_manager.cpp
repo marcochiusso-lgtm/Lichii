@@ -252,7 +252,7 @@ void AppletManager::RequestExit() {
 // passed on.
 void AppletManager::OperationModeChanged() {
     std::scoped_lock lk{m_lock};
-    const bool docked = Settings::IsDockedMode();
+    const bool docked = Settings::IsDockedForGame();
     if (!m_window_system || docked == m_docked) {
         return;
     }
@@ -267,7 +267,7 @@ void AppletManager::SetWindowSystem(WindowSystem* window_system) {
     if (!m_window_system) {
         return;
     }
-    m_docked = Settings::IsDockedMode();
+    m_docked = Settings::IsDockedForGame();
 
     m_cv.wait(lk, [&] { return m_pending_process != nullptr; });
 

@@ -69,6 +69,8 @@
 #include "core/hle/service/nvdrv/core/syncpoint_manager.h"
 #include "core/hle/service/nvdrv/devices/nx2_stub_device.h"
 #include "core/hle/service/nvdrv/nvdrv.h"
+#include "core/hle/service/am/applet_manager.h"
+#include "core/hle/service/nx2_auto_resolution.h"
 #include "core/hle/service/nvdrv/nvdrv_interface.h"
 #include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/nx2_image_layout.h"
@@ -1966,6 +1968,7 @@ private:
                 m_stats.frame_us += frame;
                 m_stats.max_frame_us = (std::max)(m_stats.max_frame_us, frame);
                 m_stats.hitches += frame > 100'000 ? 1 : 0;
+                UpdateAutoResolution(to_us(entered.time_since_epoch()), frame, w[12]);
             }
             m_stats.last_present = entered;
             if (++m_stats.presents == 600) {
@@ -1996,6 +1999,48 @@ private:
         u32 presents{}, ran_ahead{};
         std::chrono::steady_clock::time_point last_present{};
     } m_stats{};
+
+    // nx2_auto_resolution: tells a docked game it is handheld while it runs well below its frame
+    // rate (Settings::IsDockedForGame), and docked again once it keeps up.
+    void UpdateAutoResolution(long long now_us, long long frame_us, u32 timing) {
+        static const int forced = [] {
+            // "0" or "1" overrides the setting; anything else leaves it alone.
+            const char* value = std::getenv("EDEN_NX2_AUTO_RES");
+            if (value == nullptr || (value[0] != '0' && value[0] != '1')) {
+                return -1;
+            }
+            return value[0] == '1' ? 1 : 0;
+        }();
+        const bool enabled = forced >= 0 ? forced != 0
+                                         : Settings::values.nx2_auto_resolution.GetValue();
+        if (!enabled || !Settings::IsDockedMode()) {
+            if (m_auto_resolution.Handheld() || Settings::GameHandheldOverride()) {
+                m_auto_resolution.Reset();
+                Settings::SetGameHandheldOverride(false);
+                system.GetAppletManager().OperationModeChanged();
+            }
+            return;
+        }
+        // The game's own rate: its swap interval at the display rate, or the FPS limit if lower.
+        const u32 swap_interval = std::clamp<u32>(timing >> 16, 1, 4);
+        const u32 refresh = (timing & 0xffff) >= 30 && (timing & 0xffff) <= 240 ? timing & 0xffff : 60;
+        long long target_us = 1'000'000LL * swap_interval / refresh;
+        if (const u32 fps_limit = Settings::values.fps_limit.GetValue(); fps_limit != 0) {
+            target_us = (std::max)(target_us, 1'000'000LL / fps_limit);
+        }
+        const auto change = m_auto_resolution.Present(now_us, frame_us, target_us);
+        if (change == Nx2::AutoResolution::Change::None) {
+            return;
+        }
+        const bool handheld = change == Nx2::AutoResolution::Change::ToHandheld;
+        LOG_INFO(Service, "nx2:vi2 automatic resolution: {}: {} (present #{}, target {} us)",
+                 handheld ? "handheld" : "docked", m_auto_resolution.Reason(), m_presents,
+                 target_us);
+        Settings::SetGameHandheldOverride(handheld);
+        system.GetAppletManager().OperationModeChanged();
+    }
+    Nx2::AutoResolution m_auto_resolution;
+
     u32 m_previous_fence_id{~0U}; // none yet (WaitForFrame ignores ids >= 192)
     u32 m_previous_fence_value{};
 
@@ -2249,7 +2294,7 @@ private:
         // into the top-left 1920x1080, the handheld panel's resolution; the console's display
         // scans out only that region. Showing whole images put the frame in a corner inside black
         // margins that scaled with the window (seen on Mario Kart World and Splatoon Raiders).
-        if (!Settings::IsDockedMode()) {
+        if (!Settings::IsDockedForGame()) {
             crop_width = (std::min)(crop_width, 1920U);
             crop_height = (std::min)(crop_height, 1080U);
         } else if (!has_shown_size &&
@@ -2278,7 +2323,7 @@ private:
             LOG_INFO(Service,
                      "nx2:vi2 composite image {} layout {}x{}, drawn area {:#x}, crop {}x{}, docked={}",
                      image_id, layout.width, layout.height, shown_size, crop_width, crop_height,
-                     Settings::IsDockedMode());
+                     Settings::IsDockedForGame());
         }
         std::vector<Tegra::FramebufferConfig> layers{Tegra::FramebufferConfig{
             .address = *device,
@@ -2444,7 +2489,8 @@ private:
             result = Result{ErrorModule::VI, 7};
             if (name == DefaultDisplay) {
                 static const char* forced = std::getenv("EDEN_VI2_MAX_RESOLUTION_MODE");
-                mode = forced ? std::strtoull(forced, nullptr, 0) : Settings::IsDockedMode() ? 4 : 2;
+                mode = forced ? std::strtoull(forced, nullptr, 0)
+                              : Settings::IsDockedForGame() ? 4 : 2;
                 result = ResultSuccess;
             }
         }
@@ -2453,7 +2499,7 @@ private:
         rb.Push(mode);
         LOG_DEBUG(Service_VI,
                   "nx2:vi2 max resolution: name={:#x} docked={} result={:#x} mode={}",
-                  name, Settings::IsDockedMode(), result.raw, mode);
+                  name, Settings::IsDockedForGame(), result.raw, mode);
     }
 
     // Must be < 8; nn::vi::detail::LayerHistory creates 7 timestamp recorders per layer.

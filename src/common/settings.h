@@ -739,6 +739,12 @@ struct Values {
     SwitchableSetting<bool> barrier_feedback_loops{linkage, true, "barrier_feedback_loops",
                                                    Category::RendererAdvanced};
 
+    // Docked Switch 2 games: while one runs well below its frame rate it is told the console is
+    // handheld (Ocarina of Time then renders 1080p instead of 1440p), and docked again once it
+    // keeps up; controllers and the output stay docked. EDEN_NX2_AUTO_RES=0/1 overrides.
+    SwitchableSetting<bool> nx2_auto_resolution{linkage, false, "nx2_auto_resolution",
+                                                Category::RendererAdvanced};
+
     SwitchableSetting<bool> enable_buffer_history{linkage,
                                                   false,
                                                   "enable_buffer_history",
@@ -1184,6 +1190,12 @@ void SetAstcRecompressionOverride(std::optional<AstcRecompression> recompression
 bool IsOpenGL();
 
 bool IsDockedMode();
+
+// Docked as the running game is told: IsDockedMode(), unless automatic resolution reports
+// handheld for now (nx2_auto_resolution). HID and the frontend keep using IsDockedMode().
+bool IsDockedForGame();
+bool GameHandheldOverride();
+void SetGameHandheldOverride(bool handheld);
 
 float Volume();
 
