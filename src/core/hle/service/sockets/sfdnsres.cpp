@@ -12,6 +12,7 @@
 #include "common/swap.h"
 #include "core/core.h"
 #include "core/hle/service/ipc_helpers.h"
+#include "core/hle/service/sockets/online_redirect.h"
 #include "core/hle/service/sockets/sfdnsres.h"
 #include "core/hle/service/sockets/sockets.h"
 #include "core/hle/service/sockets/sockets_translate.h"
@@ -100,6 +101,37 @@ static bool IsBlockedHost(const std::string& host) {
     return std::any_of(
         blockedDomains.begin(), blockedDomains.end(),
         [&host](const std::string& domain) { return host.find(domain) != std::string::npos; });
+}
+
+// nsd's resolve replaces '%' in a host name with the environment identifier; Pia asks for
+// nncs1-%.n.n.srv.nintendo.net that way. From Droplet.
+static std::string NsdResolve(std::string host) {
+    for (size_t pos = host.find('%'); pos != std::string::npos; pos = host.find('%', pos + 3)) {
+        host.replace(pos, 1, "lp1");
+    }
+    return host;
+}
+
+// Private-server redirect (see online_redirect.h, from Droplet): the redirected host names resolve
+// to the private server, and no other name resolves at all.
+static bool OnlineRedirectResolve(const std::string& host, const std::optional<std::string>& service,
+                                  std::vector<Network::AddrInfo>& out) {
+    if (!OnlineRedirect::IsRedirectedHost(host)) {
+        LOG_WARNING(Network, "Online redirect: not resolving {}", host);
+        return false;
+    }
+    const u16 port =
+        service ? static_cast<u16>(std::strtoul(service->c_str(), nullptr, 10)) : u16{0};
+    out.push_back(Network::AddrInfo{
+        .family = Network::Domain::INET,
+        .socket_type = Network::Type::STREAM,
+        .protocol = Network::Protocol::TCP,
+        .addr = {.family = Network::Domain::INET, .ip = OnlineRedirect::Get().ip, .portno = port},
+        .canon_name = std::nullopt,
+    });
+    LOG_INFO(Network, "Online redirect: {} -> {}", host,
+             Network::IPv4AddressToString(OnlineRedirect::Get().ip));
+    return true;
 }
 
 static NetDbError GetAddrInfoErrorToNetDbError(GetAddrInfoError result) {
@@ -199,8 +231,18 @@ static std::pair<u32, GetAddrInfoError> GetHostByNameRequestImpl(HLERequestConte
         parameters.use_nsd_resolve, parameters.cancel_handle, parameters.process_id);
 
     const auto host_buffer = ctx.ReadBuffer(0);
-    const std::string host = Common::StringFromBuffer(host_buffer);
+    const std::string host = NsdResolve(Common::StringFromBuffer(host_buffer));
     // For now, ignore options, which are in input buffer 1 for GetHostByNameRequestWithOptions.
+
+    if (OnlineRedirect::Get().enabled) {
+        std::vector<Network::AddrInfo> redirected;
+        if (!OnlineRedirectResolve(host, std::nullopt, redirected)) {
+            return {0, GetAddrInfoError::AGAIN};
+        }
+        const std::vector<u8> data = SerializeAddrInfoAsHostEnt(redirected, host);
+        ctx.WriteBuffer(data, 0);
+        return {u32(data.size()), GetAddrInfoError::SUCCESS};
+    }
 
     // Prevent resolution of Nintendo servers
     if (IsBlockedHost(host)) {
@@ -316,10 +358,10 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
     // before looking up.
 
     const auto host_buffer = ctx.ReadBuffer(0);
-    const std::string host = Common::StringFromBuffer(host_buffer);
+    const std::string host = NsdResolve(Common::StringFromBuffer(host_buffer));
 
     // Prevent resolution of Nintendo servers
-    if (IsBlockedHost(host)) {
+    if (!OnlineRedirect::Get().enabled && IsBlockedHost(host)) {
         LOG_WARNING(Network, "Resolution of hostname {} requested, returning EAI_AGAIN", host);
         return {0, GetAddrInfoError::AGAIN};
     }
@@ -331,6 +373,16 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
     }
 
     // Serialized hints are also passed in a buffer, but are ignored for now.
+
+    if (OnlineRedirect::Get().enabled) {
+        std::vector<Network::AddrInfo> redirected;
+        if (!OnlineRedirectResolve(host, service, redirected)) {
+            return {0, GetAddrInfoError::AGAIN};
+        }
+        const std::vector<u8> data = SerializeAddrInfo(redirected, host);
+        ctx.WriteBuffer(data, 0);
+        return {u32(data.size()), GetAddrInfoError::SUCCESS};
+    }
 
     auto res_v = Network::GetAddressInfo(host, service);
     if (auto* res = std::get_if<std::vector<Network::AddrInfo>>(&res_v)) {

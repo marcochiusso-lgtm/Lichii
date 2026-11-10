@@ -33,6 +33,7 @@
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/server_manager.h"
 #include "core/hle/service/sockets/bsd.h"
+#include "core/hle/service/sockets/online_redirect.h"
 #include "core/hle/service/sockets/sockets_translate.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/socket_proxy.h"
@@ -1770,9 +1771,22 @@ Errno BSD_USA::ConnectImpl(s32 fd, std::span<const u8> addr) {
 
     ASSERT(addr.size() >= 16);
 
-    auto addr_in = GetValue<SockAddrIn>(addr);
+    Network::SockAddrIn addr_in = Translate(GetValue<SockAddrIn>(addr));
+    if (const auto& online = OnlineRedirect::Get(); online.enabled) {
+        const bool allowed = descriptor->is_connection_based
+                                 ? OnlineRedirect::IsAllowedDestination(addr_in.ip)
+                                 : OnlineRedirect::IsAllowedPeerDestination(addr_in.ip);
+        if (!allowed) {
+            LOG_WARNING(Service, "Online redirect: refusing connection to {}:{}",
+                        Network::IPv4AddressToString(addr_in.ip), addr_in.portno);
+            return Errno::CONNREFUSED;
+        }
+        if (addr_in.ip == online.ip && addr_in.portno == 443) {
+            addr_in.portno = online.port;
+        }
+    }
 
-    const Errno result = Translate(descriptor->socket->Connect(Translate(addr_in)));
+    const Errno result = Translate(descriptor->socket->Connect(addr_in));
 
     if (result == Errno::ISCONN) {
         LOG_DEBUG(Service, "returned ISCONN - socket already connected");
@@ -2083,6 +2097,11 @@ std::pair<s32, Errno> BSD_USA::SendToImpl(s32 fd, u32 flags, std::span<const u8>
         auto guest_addr_in = GetValue<SockAddrIn>(addr);
         addr_in = Translate(guest_addr_in);
         p_addr_in = &addr_in;
+        if (OnlineRedirect::Get().enabled && !OnlineRedirect::IsAllowedPeerDestination(addr_in.ip)) {
+            LOG_WARNING(Service, "Online redirect: dropping datagram to {}:{}",
+                        Network::IPv4AddressToString(addr_in.ip), addr_in.portno);
+            return {-1, Errno::CONNREFUSED};
+        }
     }
 
     return Translate(descriptor->socket->SendTo(flags, message, p_addr_in));

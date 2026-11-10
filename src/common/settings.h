@@ -25,6 +25,8 @@
 namespace Settings {
 
 const char* TranslateCategory(Settings::Category category);
+/// The online server playtest builds fill in, or "".
+const char* DefaultOnlineServer();
 
 struct ResolutionScalingInfo {
     u32 up_scale{1};
@@ -1060,6 +1062,17 @@ struct Values {
                                            true};
 
     // Miscellaneous
+    // Private online server (core/hle/service/sockets/online_redirect.h, from Droplet): on when
+    // online_enabled is set and online_server names a server. EDEN_NX2_ONLINE_SERVER, _CA and
+    // _FRIENDS override these.
+    Setting<bool> online_enabled{linkage, false, "online_enabled", Category::Network};
+    Setting<std::string> online_server{linkage, std::string(DefaultOnlineServer()), "online_server",
+                                       Category::Network};
+    Setting<std::string> online_server_ca{linkage, std::string(), "online_server_ca",
+                                          Category::Network};
+    Setting<std::string> online_friends{linkage, std::string(), "online_friends",
+                                        Category::Network};
+
     Setting<std::string> log_filter{linkage, "*:Info", "log_filter", Category::Miscellaneous};
     Setting<bool> log_flush_line{linkage, false, "flush_line", Category::Miscellaneous, Specialization::Default, true, true};
     Setting<bool> censor_username{linkage, true, "censor_username", Category::Miscellaneous};

@@ -156,6 +156,10 @@ void UpdateGPUAccuracy() {
     values.current_gpu_accuracy = values.gpu_accuracy.GetValue();
 }
 
+const char* DefaultOnlineServer() {
+    return "";
+}
+
 bool IsGPULevelHigh() {
     return values.current_gpu_accuracy == GpuAccuracy::High;
 }

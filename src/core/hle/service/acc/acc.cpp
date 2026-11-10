@@ -21,6 +21,7 @@
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/hle/service/acc/acc.h"
+#include "core/hle/service/sockets/online_redirect.h"
 #include "core/hle/service/acc/async_context.h"
 #include "core/hle/service/acc/errors.h"
 #include "core/hle/service/acc/profile_manager.h"
@@ -30,6 +31,30 @@
 #include "core/loader/loader.h"
 
 namespace Service::Account {
+
+// The ID token games forward to their online server at login. With a private server set, it
+// carries this emulator's friend code and the game's build ID (sockets/online_redirect.h);
+// otherwise it stays empty (zeros, as before). Returns the size written. From Droplet.
+static u32 WriteOnlineIdToken(HLERequestContext& ctx, const Core::System& system) {
+    std::vector<u8> token_data(std::max<size_t>(ctx.GetWriteBufferSize(), 0x100));
+    const auto& id = system.GetApplicationProcessBuildID();
+    size_t length = id.size();
+    while (length > 0 && id[length - 1] == 0) {
+        --length;
+    }
+    std::string build;
+    for (size_t i = 0; i < length; ++i) {
+        build += fmt::format("{:02x}", id[i]);
+    }
+    const std::string token = Sockets::OnlineRedirect::IdentityToken(build);
+    if (!token.empty() && token.size() < token_data.size()) {
+        std::memcpy(token_data.data(), token.data(), token.size());
+        (void)ctx.WriteBuffer(token_data.data(), token.size() + 1);
+        return static_cast<u32>(token.size());
+    }
+    (void)ctx.WriteBuffer(token_data.data(), std::min<size_t>(token_data.size(), 0x100));
+    return 0x100;
+}
 
 // Thumbnails are hard coded to be at least this size
 constexpr std::size_t THUMBNAIL_SIZE = 0x24000;
@@ -504,14 +529,9 @@ protected:
     void LoadIdTokenCache(HLERequestContext& ctx) {
         LOG_WARNING(Service_ACC, "(STUBBED) called");
 
-        std::vector<u8> token_data(0x100);
-        std::fill(token_data.begin(), token_data.end(), u8(0));
-
-        (void)ctx.WriteBuffer(token_data);
-
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
-        rb.Push(static_cast<u32>(token_data.size()));
+        rb.Push(WriteOnlineIdToken(ctx, system));
     }
 
     void GetNintendoAccountUserResourceCacheForApplication(HLERequestContext& ctx) {
@@ -737,14 +757,9 @@ private:
     void LoadIdTokenCache(HLERequestContext& ctx) {
         LOG_WARNING(Service_ACC, "(STUBBED) called");
 
-        std::vector<u8> token_data(0x100);
-        std::fill(token_data.begin(), token_data.end(), u8(0));
-
-        ctx.WriteBuffer(token_data);
-
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
-        rb.Push(static_cast<u32>(token_data.size()));
+        rb.Push(WriteOnlineIdToken(ctx, system));
     }
 
     void GetNintendoAccountUserResourceCacheForApplication(HLERequestContext& ctx) {

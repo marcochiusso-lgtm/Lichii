@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include <chrono>
 #include <map>
+#include <mutex>
 #include <span>
 #include <vector>
 
@@ -33,6 +35,8 @@ private:
     template <typename F>
     void ForEachCertificate(std::span<const CaCertificateId> certs, F&& f);
 
+    void EnsureOnlineCa();
+
 private:
     struct Certificate {
         TrustedCertStatus status;
@@ -40,6 +44,10 @@ private:
     };
 
     std::map<CaCertificateId, Certificate> m_certs;
+    // A private server is set but its CA isn't here yet: fetched when the game first goes online.
+    bool m_online_ca_missing = false;
+    std::mutex m_online_ca_mutex;
+    std::chrono::steady_clock::time_point m_next_ca_fetch{};
 };
 
 } // namespace Service::SSL
