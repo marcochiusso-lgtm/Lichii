@@ -43,8 +43,14 @@ struct Nx2SysmixStreams {
                 }
             }
             const auto interval = std::chrono::nanoseconds{std::chrono::milliseconds{5}};
+            // CoreTiming restarts a looping event from the end of a pause, so a delay past the
+            // lateness would stop the pump for as long as the pause lasted. A stream the guest
+            // sees no progress on for one second fails with 2153-0002 (The Duskbloods network
+            // test on a slow boot). The cap keeps the catch-up after a real stall short.
             const auto missed = std::max(late, std::chrono::nanoseconds::zero()) / interval;
-            return std::optional<std::chrono::nanoseconds>{interval * (missed + 1)};
+            const auto next = std::min<std::chrono::nanoseconds>(interval * (missed + 1),
+                                                                 std::chrono::milliseconds{50});
+            return std::optional<std::chrono::nanoseconds>{next};
         });
         system.CoreTiming().ScheduleLoopingEvent(std::chrono::milliseconds{5},
                                                  std::chrono::milliseconds{5}, timer);
