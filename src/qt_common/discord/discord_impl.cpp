@@ -96,29 +96,49 @@ void DiscordImpl::Update() {
     if (system.IsPoweredOn()) {
         system.GetAppLoader().ReadTitle(game_title);
 
-        // Used to format Icon URL for yuzu website game compatibility page
-        std::string icon_name = GetGameString(game_title);
-        auto const game_url = fmt::format(
-            "https://raw.githubusercontent.com/eden-emulator/boxart/refs/heads/master/img/{}.png",
-            icon_name);
+        // Used to format icon URL for game boxart repositories
+        const std::string icon_name = GetGameString(game_title);
 
-        httplib::SSLClient client(game_url);
-        client.set_connection_timeout(3);
-        client.set_read_timeout(3);
-        client.set_follow_location(true);
-
-#ifdef YUZU_BUNDLED_OPENSSL
-        client.load_ca_cert_store(kCert, sizeof(kCert));
-#endif
-
-        httplib::Request request{
-            .method = "HEAD",
-            .path = game_url,
+        // Lichii first, Eden as fallback
+        const std::vector<std::pair<std::string, std::string>> repositories{
+            {
+                "raw.githubusercontent.com",
+                fmt::format("/zortos293/Lichii/refs/heads/nx2/boxart/{}.jpg", icon_name),
+            },
+            {
+                "raw.githubusercontent.com",
+                fmt::format("/eden-emulator/boxart/refs/heads/master/img/{}.png", icon_name),
+            },
         };
 
-        auto res = client.send(request);
-        UpdateGameStatus(game_url, res && res->status == 200);
+        bool has_boxart = false;
+        std::string game_url;
 
+        for (const auto& [host, path] : repositories) {
+            httplib::SSLClient client(host);
+            client.set_connection_timeout(3);
+            client.set_read_timeout(3);
+            client.set_follow_location(true);
+
+#ifdef YUZU_BUNDLED_OPENSSL
+            client.load_ca_cert_store(kCert, sizeof(kCert));
+#endif
+
+            httplib::Request request{
+                .method = "HEAD",
+                .path = path,
+            };
+
+            const auto res = client.send(request);
+
+            if (res && res->status == 200) {
+                game_url = fmt::format("https://{}{}", host, path);
+                has_boxart = true;
+                break;
+            }
+        }
+
+        UpdateGameStatus(game_url, has_boxart);
         return;
     }
 

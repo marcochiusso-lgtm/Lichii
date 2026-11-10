@@ -732,7 +732,31 @@ void ConfigurePerGame::OnDetectNupIcon() {
                     return out;
                 }
 
-                // 2. Check Eden official boxart repository
+                // 2. Check Lichii official boxart repository
+                if (!slug.empty()) {
+                    std::vector<std::string> candidate_slugs{slug};
+                    if (!slug.starts_with("the-legend-of-")) {
+                        candidate_slugs.push_back("the-legend-of-" + slug);
+                    }
+                    if (!slug.starts_with("super-")) {
+                        candidate_slugs.push_back("super-" + slug);
+                    }
+                    for (const auto& s : candidate_slugs) {
+                        if (budget.Stopped()) {
+                            break;
+                        }
+                        const auto url = fmt::format(
+                            "https://raw.githubusercontent.com/zortos293/Lichii/"
+                            "refs/heads/nx2/boxart/{}.jpg",
+                            s);
+                        if (const auto body = HttpGetUrl(url, budget);
+                            body && try_decode_bytes(*body)) {
+                            return out;
+                        }
+                    }
+                }
+
+                // 3. Check Eden official boxart repository
                 if (!slug.empty()) {
                     std::vector<std::string> candidate_slugs{slug};
                     if (!slug.starts_with("the-legend-of-")) {
@@ -756,7 +780,7 @@ void ConfigurePerGame::OnDetectNupIcon() {
                     }
                 }
 
-                // 3. Query Wikipedia pageimages API (handles Switch & Switch 2 games)
+                // 4. Query Wikipedia pageimages API (handles Switch & Switch 2 games)
                 if (!search_name.empty()) {
                     for (const auto& suffix : {" video game", " Nintendo", ""}) {
                         if (budget.Stopped()) {
@@ -839,7 +863,7 @@ void ConfigurePerGame::OnDetectNupIcon() {
                     }
                 }
 
-                // 4. Fallback to Bing square game icon thumbnail search
+                // 5. Fallback to Bing square game icon thumbnail search
                 if (!budget.Stopped() && !search_name.empty()) {
                     const std::string bing_url = fmt::format(
                         "https://www.bing.com/images/search?q={}&qft=+filterui:aspect-square",
