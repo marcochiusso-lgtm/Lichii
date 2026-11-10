@@ -128,7 +128,7 @@ static IPSwitchRecord EscapeStringSequences(std::string_view sv) {
                 switch (it[1]) {
                 case 'a': return '\a';
                 case 'b': return '\b';
-                case 'e': return '\e';
+                case 'e': return '\x1b';
                 case 'f': return '\f';
                 case 'n': return '\n';
                 case 'r': return '\r';
