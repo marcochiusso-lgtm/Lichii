@@ -196,7 +196,7 @@ struct System::Impl {
 
     u64 program_id;
 
-    bool Initialize(System& system) {
+    void CreateDeviceMemory() {
         try {
             device_memory.emplace();
         } catch (const std::bad_alloc&) {
@@ -205,6 +205,10 @@ struct System::Impl {
         if (device_memory && !device_memory->buffer.BackingBasePointer()) {
             device_memory.reset();
         }
+    }
+
+    bool Initialize(System& system) {
+        CreateDeviceMemory();
 
         is_multicore = Settings::values.use_multi_core.GetValue();
         memory_layout = Settings::values.memory_layout_mode.GetValue();
@@ -348,8 +352,16 @@ struct System::Impl {
         debugger.emplace(system, port);
     }
 
+    /// Prepares the device memory and the kernel for the next program.
     SystemResultStatus InitializeKernel(System& system) {
         LOG_DEBUG(Core, "initialized OK");
+
+        // ShutdownMainProcess releases it after a Switch 2 game; create it before the check below
+        // so the released slot alone does not rerun the full Initialize. A slot left empty by a
+        // failed allocation still goes through ReinitializeIfNecessary.
+        if (std::exchange(device_memory_released, false)) {
+            CreateDeviceMemory();
+        }
 
         // Setting changes may require a full system reinitialization (e.g., disabling multicore).
         ReinitializeIfNecessary(system);
@@ -385,6 +397,7 @@ struct System::Impl {
         return SystemResultStatus::Success;
     }
 
+    /// Creates the program's process and sets up the rest of the system to run it.
     SystemResultStatus Load(System& system, Frontend::EmuWindow& emu_window, const std::string& filepath, Service::AM::FrontendAppletParameters& params) {
         VideoCommon::StutterTrace::BootMarker("boot_start");
         if (params.launch_type == Service::AM::LaunchType::FrontendInitiated) {
@@ -446,6 +459,7 @@ struct System::Impl {
         auto process = Service::AM::CreateApplicationProcess(control, app_loader, load_result, system, file, params.program_id, params.program_index);
         if (load_result != Loader::ResultStatus::Success) {
             LOG_CRITICAL(Core, "Failed to load ROM (Error {})!", load_result);
+            process.reset();
             ShutdownMainProcess();
             return SystemResultStatus(u32(SystemResultStatus::ErrorLoader) + u32(load_result));
         }
@@ -479,6 +493,9 @@ struct System::Impl {
         SystemResultStatus init_result{SetupForApplicationProcess(system, emu_window)};
         if (init_result != SystemResultStatus::Success) {
             LOG_CRITICAL(Core, "Failed to initialize system (Error {})!", int(init_result));
+            // The process's kernel objects must be closed while the kernel and the device memory
+            // holding them still exist.
+            process.reset();
             ShutdownMainProcess();
             return init_result;
         }
@@ -529,6 +546,8 @@ struct System::Impl {
         return SystemResultStatus::Success;
     }
 
+    /// Stops the running program and releases what it used, keeping the System reusable for
+    /// the next Load.
     void ShutdownMainProcess() {
         debug_service.reset();
         SetShuttingDown(true);
@@ -561,6 +580,7 @@ struct System::Impl {
         perf_stats.reset();
         cpu_manager.Shutdown();
         debugger.reset();
+        ReleaseGeneralChannelEvent();
         kernel.Shutdown();
         stop_event = {};
         Network::RestartSocketOperations();
@@ -572,6 +592,14 @@ struct System::Impl {
 
         // Reset all glue registrations
         arp_manager.ResetAll();
+
+        // The guest RAM section keeps every page the game touched until it is destroyed (up to
+        // 12 GiB), and the next Load reuses it. Switch 2 only: Switch 1 keeps its behaviour.
+        // InitializeKernel creates it again, sized for the next game.
+        if (Settings::CurrentProgramIsSwitch2() && device_memory) {
+            device_memory.reset();
+            device_memory_released = true;
+        }
 
         LOG_DEBUG(Core, "Shutdown OK");
     }
@@ -625,6 +653,8 @@ struct System::Impl {
     std::optional<Core::PerfStats> perf_stats;
     std::optional<Tegra::Host1x::Host1x> host1x_core;
     std::optional<Core::DeviceMemory> device_memory;
+    /// ShutdownMainProcess released device_memory; InitializeKernel creates it again.
+    bool device_memory_released{};
     std::optional<AudioCore::AudioCore> audio_core;
     std::optional<Memory::CheatEngine> cheat_engine;
     std::optional<Tools::Freezer> memory_freezer;
@@ -661,11 +691,24 @@ struct System::Impl {
     /// EDEN_NX2_DEBUG_SERVER; the last member, so it stops before anything it reads goes away.
     std::unique_ptr<Nx2Debug::Service> debug_service;
 
+    /// Creates the general channel's event on first use after a kernel (re)start.
     void EnsureGeneralChannelInitialized(System& system) {
         if (!general_channel_event) {
             general_channel_context.emplace(system, "GeneralChannel");
             general_channel_event.emplace(*general_channel_context);
+            // Data pushed before the previous kernel shut down is still queued.
+            if (!general_channel.empty()) {
+                general_channel_event->Signal(kernel);
+            }
         }
+    }
+
+    /// The event is a kernel object: close it before kernel.Shutdown(), which (for a Switch 2
+    /// program, with the device memory) destroys the slab it lives in. The queued data is kept.
+    void ReleaseGeneralChannelEvent() {
+        std::scoped_lock lk{general_channel_mutex};
+        general_channel_event.reset();
+        general_channel_context.reset();
     }
 };
 

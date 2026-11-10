@@ -129,6 +129,7 @@ add_library(video_core STATIC
     nx2_async_readback.h
     nx2_download_trace.h
     pending_maps.h
+    pipeline_cache_policy.h
     present.h
     pte_kind.h
     query_cache/bank_base.h
