@@ -52,6 +52,8 @@
 #include "core/hle/service/am/process_creation.h"
 #include "core/hle/service/apm/apm_controller.h"
 #include "core/hle/service/filesystem/filesystem.h"
+#include "core/hle/service/friend/resort_doc_adapter.h"
+#include "core/hle/service/friend/resort_doc_bus.h"
 #include "core/hle/service/glue/glue_manager.h"
 #include "core/hle/service/glue/time/static.h"
 #include "core/hle/service/psc/time/static.h"
@@ -584,6 +586,10 @@ struct System::Impl {
         kernel.Shutdown();
         stop_event = {};
         Network::RestartSocketOperations();
+
+        Service::Friend::ResortBus::StopResortDocBus();
+        Service::Friend::ResortBus::ResetGameAdapter();
+        Settings::SetCurrentProgramID(0);
 
         if (auto room_member = Network::GetRoomMember().lock()) {
             Network::GameInfo game_info{};

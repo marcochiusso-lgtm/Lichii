@@ -128,6 +128,8 @@ std::optional<IPv4Address> GetHostIPv4Address();
 /// @return nullopt outside a room and while still joining it
 std::optional<IPv4Address> GetRoomIPv4Address();
 
+bool SwitchSportsLanFixesEnabled();
+
 std::string IPv4AddressToString(IPv4Address ip_addr);
 u32 IPv4AddressToInteger(IPv4Address ip_addr);
 

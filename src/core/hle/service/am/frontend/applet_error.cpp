@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include "common/assert.h"
@@ -98,7 +99,7 @@ namespace {
 template <typename T>
 void CopyArgumentData(std::span<const u8> data, T& variable) {
     ASSERT(data.size() >= sizeof(T));
-    std::memcpy(&variable, data.data(), sizeof(T));
+    std::memcpy(&variable, data.data(), std::min(data.size(), sizeof(T)));
 }
 
 Result Decode64BitError(u64 error) {
