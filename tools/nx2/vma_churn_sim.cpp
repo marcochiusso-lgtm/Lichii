@@ -20,6 +20,11 @@
 #include <vulkan/vulkan.h>
 #include "vk_mem_alloc.h"
 #include <algorithm>
+#include <charconv>
+#include <cctype>
+#include <cerrno>
+#include <limits>
+#include <string_view>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -97,9 +102,40 @@ static void run(const Cfg& c, u64 working_set, int churn_rounds, unsigned seed) 
 
 }
 int main(int argc, char** argv) {
-    const u64 W = (argc > 1 ? std::atoll(argv[1]) : 12000) * 1048576ULL;
-    const int rounds = argc > 2 ? std::atoi(argv[2]) : 300;
-    if (argc > 3) g_evict = std::atof(argv[3]);
+    u64 working_set_mib = 12000;
+    int rounds = 300;
+    const auto parse_integer = [](const char* arg, auto& value) {
+        std::string_view text{arg};
+        while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
+            text.remove_prefix(1);
+        }
+        while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
+            text.remove_suffix(1);
+        }
+        if (text.starts_with('+')) text.remove_prefix(1);
+        if (text.empty()) return false;
+        const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
+        return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+    };
+    if ((argc > 1 && !parse_integer(argv[1], working_set_mib)) ||
+        working_set_mib > std::numeric_limits<u64>::max() / 1048576ULL ||
+        (argc > 2 && !parse_integer(argv[2], rounds)) || rounds < 1) {
+        std::fprintf(stderr, "invalid working set or round count\n");
+        return 2;
+    }
+    if (argc > 3) {
+        char* end{};
+        errno = 0;
+        g_evict = std::strtod(argv[3], &end);
+        const bool converted = end != argv[3];
+        while (std::isspace(static_cast<unsigned char>(*end))) ++end;
+        if (!converted || *end != '\0' || errno == ERANGE || !std::isfinite(g_evict) ||
+            g_evict < 0 || g_evict > 1) {
+            std::fprintf(stderr, "invalid evicted share\n");
+            return 2;
+        }
+    }
+    const u64 W = working_set_mib * 1048576ULL;
     const u64 MiB = 1048576ULL, none = ~0ULL;
     Cfg cfgs[] = {
         {"64 MiB blocks, default (today)", 64 * MiB, 0, none},

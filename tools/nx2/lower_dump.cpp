@@ -34,10 +34,28 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "cannot read %s\n", argv[i]);
             continue;
         }
-        const auto length = static_cast<size_t>(file.tellg());
+        const auto end = file.tellg();
+        if (end < 0) {
+            std::fprintf(stderr, "cannot read %s\n", argv[i]);
+            continue;
+        }
+        const auto length = static_cast<size_t>(end);
+        if (length % sizeof(Instruction) != 0) {
+            std::fprintf(stderr, "incomplete instruction in %s\n", argv[i]);
+            continue;
+        }
         file.seekg(0);
+        if (!file) {
+            std::fprintf(stderr, "cannot read %s\n", argv[i]);
+            continue;
+        }
         std::vector<Instruction> code(length / sizeof(Instruction));
-        file.read(reinterpret_cast<char*>(code.data()), code.size() * sizeof(Instruction));
+        const auto bytes = code.size() * sizeof(Instruction);
+        file.read(reinterpret_cast<char*>(code.data()), bytes);
+        if (static_cast<size_t>(file.gcount()) != bytes || !file) {
+            std::fprintf(stderr, "short read %s\n", argv[i]);
+            continue;
+        }
         ++total;
         const auto result = LowerToMaxwell(code);
         if (result) {
