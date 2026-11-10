@@ -38,8 +38,10 @@
 #include <QNetworkRequest>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScreen>
 #include <QStandardPaths>
 #include <QString>
+#include <QStyle>
 #include <QTimer>
 #include <QUrl>
 #include <QtConcurrent/QtConcurrentRun>
@@ -403,6 +405,15 @@ ConfigurePerGame::ConfigurePerGame(QWidget* parent, u64 title_id_, const std::st
 
     setFocusPolicy(Qt::ClickFocus);
     setWindowTitle(tr("Properties"));
+
+    const QSize content = ui->contentWidget->sizeHint();
+    const QMargins margins = layout()->contentsMargins();
+    const QSize wanted(content.width() + margins.left() + margins.right(),
+                       sizeHint().height() - ui->contentScrollArea->sizeHint().height() +
+                           content.height());
+    const QSize available = screen()->availableGeometry().size() -
+                            QSize(0, style()->pixelMetric(QStyle::PM_TitleBarHeight));
+    resize(size().expandedTo(wanted).boundedTo(available));
 
     addons_tab->SetTitleId(title_id);
 
