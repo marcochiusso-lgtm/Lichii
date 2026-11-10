@@ -36,6 +36,13 @@ EDEN_NX2_FENCE_BATCH=1
 # Drop reactive-flushing read traps on Switch 2 programs (opt-in; can reduce FPS from 29 to 24 in MKW).
 #EDEN_NX2_NO_REACTIVE=1
 
+# AMD proprietary driver only (opt-in, experimental): keep shaderFloat16, which the AMD path turns
+# off because of float16 errors seen in Donkey Kong Country Returns (DKCR) on 2026 drivers; DKCR may
+# show them again with it. Ocarina of Time, RX 9070 XT: ~20 -> 24-25 fps at the same spot; RX 6600
+# with a Ryzen 5 5600G: no gain measured (CPU-bound there). The name lacks the EDEN_NX2_ prefix,
+# so set it in the environment or in the user copy of this file, not in a beside-application one.
+#EDEN_AMD_FP16=1
+
 #EDEN_NX2_MME_JIT=0
 #EDEN_NX2_PBFLUSH=0
 #EDEN_NX2_SKIP_SAME=0
