@@ -38,7 +38,8 @@ enum class NativeDrawAction {
     Skip,      ///< Drop the draw.
 };
 
-/// @param mode           Wait, Bounded or Skip (EDEN_NX2_ASYNC_DISCARD=1 passes Skip).
+/// @param mode           Wait, Bounded or Skip (EDEN_NX2_ASYNC_DISCARD=1 passes Skip, or Wait for a
+///                       draw without a depth target while few pipelines are pending).
 /// @param can_discard    The legacy heuristic allows skipping this draw.
 /// @param budget_left_us Microseconds left of this frame's wait budget.
 constexpr NativeDrawAction DecideNativePending(NativePendingMode mode, bool can_discard,

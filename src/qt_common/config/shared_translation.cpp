@@ -343,7 +343,9 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
               "Wait stalls the GPU until the pipeline is ready (no missing effects, but long "
               "stalls on new content). Skip drops the draw, which can leave an effect missing for "
               "a few frames. Bounded waits up to the time below per frame, then skips. The "
-              "EDEN_NX2_ASYNC_DISCARD=1 environment variable still forces Skip."));
+              "EDEN_NX2_ASYNC_DISCARD=1 environment variable overrides this: draws with a depth "
+              "target skip, and draws without one wait unless "
+              "EDEN_NX2_ASYNC_DISCARD_MIN_PENDING builds (32 by default) are pending."));
     INSERT(Settings, native_pipeline_wait_ms, tr("Pipeline wait per frame (ms):"),
            tr("Used by the Bounded mode: the most time per frame that Switch 2 draws may wait in "
               "total for pipelines that are still building. Once spent, the remaining unbuilt "

@@ -6,8 +6,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -2215,9 +2217,24 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) noexc
         const char* value = std::getenv("EDEN_NX2_ASYNC_DISCARD");
         const bool enabled = value != nullptr && value[0] == '1';
         if (enabled) {
-            LOG_INFO(Render_Vulkan, "EDEN_NX2_ASYNC_DISCARD: native draws skip unbuilt pipelines");
+            LOG_INFO(Render_Vulkan, "EDEN_NX2_ASYNC_DISCARD: native draws with a depth target skip "
+                                    "unbuilt pipelines, others once many builds are pending");
         }
         return enabled;
+    }();
+    // A skipped draw that runs once (text rendered to a texture) is never drawn again: without a
+    // depth target, only skip while so many pipelines are pending that waiting would stall for
+    // seconds. Scene draws into a depth target come back on the next frame.
+    static const u32 discard_min_pending = [] {
+        constexpr u32 default_min_pending = 32;
+        const char* value = std::getenv("EDEN_NX2_ASYNC_DISCARD_MIN_PENDING");
+        if (value == nullptr) {
+            return default_min_pending;
+        }
+        const char* const end = value + std::strlen(value);
+        u32 parsed{};
+        const auto result = std::from_chars(value, end, parsed);
+        return result.ec == std::errc{} && result.ptr == end ? parsed : default_min_pending;
     }();
     const auto& draw_state = maxwell3d->draw_manager.draw_state;
     const bool native = maxwell3d->GetNativeMacroEngine().native_turing;
@@ -2235,7 +2252,17 @@ GraphicsPipeline* PipelineCache::BuiltPipeline(GraphicsPipeline* pipeline) noexc
             break;
         }
         if (discard_native) {
-            mode = NativePendingMode::Skip;
+            const auto pending_jobs = [this] {
+                const auto priorities = shader_jobs->Stats().priorities;
+                const auto& need_now =
+                    priorities[static_cast<size_t>(VideoCommon::ShaderJobPriority::NeedNow)];
+                const auto& soon =
+                    priorities[static_cast<size_t>(VideoCommon::ShaderJobPriority::Soon)];
+                return need_now.queued + need_now.running + soon.queued + soon.running;
+            };
+            mode = maxwell3d->regs.zeta_enable != 0 || pending_jobs() >= discard_min_pending
+                       ? NativePendingMode::Skip
+                       : NativePendingMode::Wait;
         }
     }
     // Native draws are judged by the heuristic only when a mode other than Wait is chosen.
