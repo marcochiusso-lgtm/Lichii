@@ -344,6 +344,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkGetDeviceQueue vkGetDeviceQueue{};
     PFN_vkGetEventStatus vkGetEventStatus{};
     PFN_vkGetFenceStatus vkGetFenceStatus{};
+    PFN_vkGetDeviceImageMemoryRequirements vkGetDeviceImageMemoryRequirements{};
     PFN_vkGetImageMemoryRequirements vkGetImageMemoryRequirements{};
     PFN_vkGetImageSparseMemoryRequirements vkGetImageSparseMemoryRequirements{};
     PFN_vkGetPipelineCacheData vkGetPipelineCacheData{};

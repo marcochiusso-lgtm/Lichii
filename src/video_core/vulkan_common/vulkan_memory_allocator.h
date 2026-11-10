@@ -172,6 +172,12 @@ namespace Vulkan {
             }
         }
 
+        /// An image of over half a default block and up to a quarter of a medium image pool
+        /// block, placed in that pool (Device::SeparatePool::MediumImages). False leaves it to
+        /// the default blocks.
+        bool AllocateMediumImage(const VkImageCreateInfo &ci, VkImage &handle,
+                                 VmaAllocation &allocation) const;
+
         /// CreateImage's fallbacks; the image is left null when the result is an error.
         /// may_fail: the caller handles VK_ERROR_OUT_OF_DEVICE_MEMORY (see UsesUnbackedFallback).
         VkResult AllocateImage(const VkImageCreateInfo &ci, bool dedicated, bool may_fail,

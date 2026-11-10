@@ -235,6 +235,81 @@ vk::Image MemoryAllocator::TryCreateImage(const VkImageCreateInfo &ci, bool dedi
     return image;
 }
 
+bool MemoryAllocator::AllocateMediumImage(const VkImageCreateInfo &ci, VkImage &handle,
+                                          VmaAllocation &allocation) const {
+    // Over half a default block (8 MiB), VMA gives an image memory of its own: one driver
+    // allocation (vkAllocateMemory) per image. Ocarina of Time creates and frees render targets
+    // and textures of that size while the player runs, and those allocations took ~5% of the
+    // GPU back thread there.
+    const auto &dld = device.GetDispatchLoader();
+    const VkDevice logical = *device.GetLogical();
+    const auto fits = [](const VkMemoryRequirements &requirements) {
+        return requirements.size > Device::SeparatePoolBlockSize / 2 &&
+               requirements.size <= Device::MediumImagePoolBlockSize / 4;
+    };
+    // Vulkan 1.3 or VK_KHR_maintenance4 give the requirements without creating the image, so an
+    // image the pool does not take is created only once, by VMA.
+    const bool query_first = dld.vkGetDeviceImageMemoryRequirements != nullptr &&
+                             device.IsKhrMaintenance4Supported();
+    VkMemoryRequirements requirements{};
+    if (query_first) {
+        const VkDeviceImageMemoryRequirements info{
+            .sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
+            .pNext = nullptr,
+            .pCreateInfo = &ci,
+            .planeAspect = VkImageAspectFlagBits{},
+        };
+        VkMemoryRequirements2 requirements2{
+            .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+            .pNext = nullptr,
+            .memoryRequirements = {},
+        };
+        dld.vkGetDeviceImageMemoryRequirements(logical, &info, &requirements2);
+        requirements = requirements2.memoryRequirements;
+        if (!fits(requirements)) {
+            return false;
+        }
+    }
+    VkImage raw{};
+    if (dld.vkCreateImage(logical, &ci, nullptr, &raw) != VK_SUCCESS) {
+        return false;
+    }
+    const auto discard = [&] {
+        dld.vkDestroyImage(logical, raw, nullptr);
+        return false;
+    };
+    if (!query_first) {
+        dld.vkGetImageMemoryRequirements(logical, raw, &requirements);
+        if (!fits(requirements)) {
+            return discard();
+        }
+    }
+    VmaAllocationCreateInfo type_ci{};
+    type_ci.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    u32 memory_type = 0;
+    if (vmaFindMemoryTypeIndex(allocator, requirements.memoryTypeBits, &type_ci, &memory_type) !=
+        VK_SUCCESS) {
+        return discard();
+    }
+    const VmaPool pool = device.GetSeparatePool(Device::SeparatePool::MediumImages, memory_type);
+    if (pool == VK_NULL_HANDLE) {
+        return discard();
+    }
+    VmaAllocationCreateInfo alloc_ci{};
+    alloc_ci.flags =
+        VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT | VMA_ALLOCATION_CREATE_STRATEGY_MIN_MEMORY_BIT;
+    alloc_ci.pool = pool;
+    if (vmaAllocateMemoryForImage(allocator, raw, &alloc_ci, &allocation, nullptr) != VK_SUCCESS) {
+        return discard();
+    }
+    if (vmaBindImageMemory(allocator, allocation, raw) != VK_SUCCESS) {
+        vmaFreeMemory(allocator, allocation);
+        return discard();
+    }
+    handle = raw;
+    return true;
+}
+
 VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedicated, bool may_fail,
                                         vk::Image &image) const {
     const VmaAllocationCreateInfo alloc_ci = {
@@ -270,8 +345,14 @@ VkResult MemoryAllocator::AllocateImage(const VkImageCreateInfo &ci, bool dedica
     VmaAllocationInfo alloc_info{};
     const u64 texels = u64{ci.extent.width} * ci.extent.height * ci.extent.depth * ci.arrayLayers;
     const bool huge = texels > MaxBackedImageTexels;
-    VkResult result = huge ? VK_ERROR_OUT_OF_DEVICE_MEMORY
-                           : vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
+    VkResult result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    if (!dedicated && !huge && texels >= (u64{1} << 20) &&
+        AllocateMediumImage(ci, handle, allocation)) {
+        vmaGetAllocationInfo(allocator, allocation, &alloc_info);
+        result = VK_SUCCESS;
+    } else if (!huge) {
+        result = vmaCreateImage(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
+    }
     if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !huge) {
         // Over the device memory budget (Switch 2 titles fill 8 GB cards): let the driver page
         // it out rather than failing the draw and aborting.

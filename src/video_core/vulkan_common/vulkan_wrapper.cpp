@@ -230,6 +230,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkGetDeviceQueue);
     X(vkGetEventStatus);
     X(vkGetFenceStatus);
+    X(vkGetDeviceImageMemoryRequirements);
     X(vkGetImageMemoryRequirements);
     X(vkGetImageSparseMemoryRequirements);
     X(vkGetPipelineCacheData);
@@ -290,6 +291,12 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     }
     if (!dld.vkQueueSubmit2) {
         Proc(dld.vkQueueSubmit2, dld, "vkQueueSubmit2KHR", device);
+    }
+
+    // Core in Vulkan 1.3, otherwise requires VK_KHR_maintenance4
+    if (!dld.vkGetDeviceImageMemoryRequirements) {
+        Proc(dld.vkGetDeviceImageMemoryRequirements, dld, "vkGetDeviceImageMemoryRequirementsKHR",
+             device);
     }
 
     if (!dld.vkCreateRenderPass2) {
