@@ -431,6 +431,7 @@ RasterizerVulkan::RasterizerVulkan(Core::Frontend::EmuWindow& emu_window_, Tegra
 
 RasterizerVulkan::~RasterizerVulkan() {
     VideoCommon::GpuSplit::Get().SetIdleHook(nullptr, nullptr);
+    state_tracker.ClearChannel();
     scheduler.WaitWorker();
     scheduler.Finish();
 }
@@ -1055,6 +1056,8 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func, bool is_in
     TracePendingCpuWrites(false, pipeline->ShaderHashes());
     TraceRenderState(is_indexed, "configured", texture_cache.GetFramebuffer());
     if (frame_dump.Capturing()) {
+        frame_dump.NoteKeys(pipeline->ShaderHashes(),
+                            pipeline_cache.GraphicsNativeKeys(pipeline->ShaderHashes()));
         FrameDumpPass(texture_cache.GetFramebuffer());
         frame_dump.NoteDraw(pipeline->ShaderHashes());
         bool recorded = false;
@@ -2088,6 +2091,9 @@ void RasterizerVulkan::DispatchCompute() {
         frame_dump.CaptureDispatch(pipeline->ShaderHash(), written);
     };
     TracePendingCpuWrites(true, std::array{pipeline->ShaderHash()});
+    if (frame_dump.Capturing()) {
+        frame_dump.NoteKeys(std::array{pipeline->ShaderHash()}, std::array{native_key});
+    }
     if (frame_dump.CapturingSampled()) {
         boost::container::small_vector<FrameDump::Sampled, 16> sampled;
         for (const auto& image : pipeline->SampledImages()) {
@@ -4439,9 +4445,14 @@ void RasterizerVulkan::BindChannel(Tegra::Control::ChannelState& channel) {
     query_cache.BindToChannel(channel_id);
     state_tracker.ChangeChannel(channel);
     state_tracker.InvalidateState();
+    bound_channel_id = channel_id;
 }
 
 void RasterizerVulkan::ReleaseChannel(s32 channel_id) {
+    if (channel_id == bound_channel_id) {
+        state_tracker.ClearChannel();
+        bound_channel_id = -1;
+    }
     EraseChannel(channel_id);
     {
         std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};

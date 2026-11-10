@@ -133,6 +133,27 @@ struct GlobalAtomicProgram : Program {
 };
 } // namespace
 
+TEST_CASE("A removed conditional barrier requires a full guest warp", "[video_core][coherence]") {
+    for (const bool conditional : {false, true}) {
+        CAPTURE(conditional);
+        Program fixture;
+        IR::IREmitter ir{fixture.block};
+        ir.Barrier();
+        if (conditional) {
+            fixture.program.syntax_list = {
+                {{}, IR::AbstractSyntaxNode::Type::If},
+                {{.block = &fixture.block}, IR::AbstractSyntaxNode::Type::Block},
+                {{}, IR::AbstractSyntaxNode::Type::EndIf},
+            };
+        }
+        Optimization::ConditionalBarrierPass(fixture.program);
+        CHECK(fixture.program.info.removed_conditional_barrier == conditional);
+        CHECK(fixture.program.info.UsesWarpOps() == conditional);
+        CHECK(fixture.block.front().GetOpcode() ==
+              (conditional ? IR::Opcode::Identity : IR::Opcode::Barrier));
+    }
+}
+
 TEST_CASE("Native LDG cache policy reaches every global load width", "[video_core][coherence]") {
     for (const bool native : {false, true}) {
         for (u32 cache = 0; cache < 4; ++cache) {

@@ -1012,7 +1012,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
     if (!pipeline_cache_filename.empty()) {
         StopBackgroundJobs();
         serialization_thread.WaitForRequests();
-        if (use_vulkan_pipeline_cache && !vulkan_pipeline_cache_filename.empty()) {
+        if (use_vulkan_pipeline_cache && !vulkan_pipeline_cache_filename.empty() &&
+            device.CanReadPipelineCacheDuringBuilds()) {
             SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
                                          CACHE_VERSION);
         }
@@ -1413,11 +1414,11 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
                 .cpu_bytes = TranslationBytes(bytes),
                 .driver_bytes = DriverCompileBytes,
                 .cpu = [this, &state, &built_one, &records, &pipeline_record, &unreadable, key,
-                        indices = std::move(indices),
+                        record_indices = std::move(indices),
                         read_properties](VideoCommon::ShaderJobContext& context)
                     -> VideoCommon::ShaderDriverStage {
                     std::vector<CachedComputeTranslation> candidates;
-                    for (const size_t index : indices) {
+                    for (const size_t index : record_indices) {
                         const CacheV2::LogRecord& record = *records[index];
                         Common::UniqueFunction<void, std::istream&, FileEnvironment> read_compute{
                             [&](std::istream& file, FileEnvironment env) {
@@ -1570,7 +1571,7 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
     records.clear();
     log.reset();
 
-    if (use_vulkan_pipeline_cache) {
+    if (use_vulkan_pipeline_cache && device.CanReadPipelineCacheDuringBuilds()) {
         SerializeVulkanPipelineCache(vulkan_pipeline_cache_filename, vulkan_pipeline_cache,
                                      CACHE_VERSION);
         size_t size = 0;
@@ -1792,7 +1793,8 @@ void PipelineCache::PrecacheShaders(u64 title_id, std::vector<PrecacheJob> jobs,
 }
 
 void PipelineCache::QueueVulkanPipelineCacheFlush() {
-    if (!use_vulkan_pipeline_cache || vulkan_pipeline_cache_filename.empty()) {
+    if (!use_vulkan_pipeline_cache || vulkan_pipeline_cache_filename.empty() ||
+        !device.CanReadPipelineCacheDuringBuilds()) {
         return;
     }
     if (++pipelines_since_flush < VULKAN_CACHE_FLUSH_PIPELINES) {
@@ -1821,7 +1823,8 @@ void PipelineCache::QueueVulkanPipelineCacheFlush() {
 }
 
 void PipelineCache::QueueVulkanPipelineCacheSave() {
-    if (!use_vulkan_pipeline_cache || vulkan_pipeline_cache_filename.empty()) {
+    if (!use_vulkan_pipeline_cache || vulkan_pipeline_cache_filename.empty() ||
+        !device.CanReadPipelineCacheDuringBuilds()) {
         return;
     }
     // Not skipped when a timed flush is in flight: that one may have read the cache before the

@@ -336,6 +336,8 @@ struct Info {
     bool uses_sparse_residency{};
     bool uses_demote_to_helper_invocation{};
     bool uses_subgroup_vote{};
+    /// Set when a barrier in conditional control flow was dropped, see ConditionalBarrierPass.
+    bool removed_conditional_barrier{};
     bool uses_subgroup_mask{};
     bool uses_fswzadd{};
     bool uses_derivatives{};
@@ -396,6 +398,13 @@ struct Info {
     ImageDescriptors image_descriptors;
 
     bool operator==(const Info&) const = default;
+
+    /// True when the shader only runs correctly if a subgroup spans a whole guest warp.
+    [[nodiscard]] bool UsesWarpOps() const noexcept {
+        return removed_conditional_barrier || uses_subgroup_vote || uses_subgroup_invocation_id ||
+               uses_subgroup_shuffles || uses_subgroup_mask || uses_quad_shuffles ||
+               uses_fswzadd;
+    }
 };
 
 template <typename Descriptors>

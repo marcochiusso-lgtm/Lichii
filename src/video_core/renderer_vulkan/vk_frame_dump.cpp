@@ -13,6 +13,7 @@
 #include <fmt/format.h>
 
 #include "common/cityhash.h"
+#include "common/fs/fs_util.h"
 #include "common/logging.h"
 #include "common/settings.h"
 #include "common/stb.h"
@@ -34,6 +35,8 @@ using VideoCore::Surface::PixelFormat;
 constexpr size_t SIZE_CAP = size_t{2} << 30;
 /// RecordingSampledTextures: a sampled capture is running.
 std::atomic<bool> recording_sampled{};
+/// RecordingWrittenImages: a capture is running.
+std::atomic<bool> recording_capture{};
 constexpr size_t STAGING_BUDGET = size_t{256} << 20;
 
 template <typename T>
@@ -245,7 +248,8 @@ FrameDump::FrameDump(const Device& device_, MemoryAllocator& memory_allocator_,
     // "file" captures once <dir>/capture.now exists, so a frame can be picked while playing.
     schedule.Configure(value, directory / "capture.now",
                        sampled_value && *sampled_value != '\0' && *sampled_value != '0');
-    LOG_INFO(Render_Vulkan, "Frame dump armed: dir={} at={}", directory.string(), value);
+    LOG_INFO(Render_Vulkan, "Frame dump armed: dir={} at={}",
+             Common::FS::PathToUTF8String(directory), value);
 }
 
 FrameDump::~FrameDump() {
@@ -281,6 +285,7 @@ void FrameDump::Arm(std::filesystem::path directory_, bool sampled, bool buffers
     dispatch_sampled.clear();
     seen_buffers.clear();
     written_buffers.clear();
+    shader_keys.clear();
     pass_index = 0;
     draws = 0;
     dispatches = 0;
@@ -457,9 +462,10 @@ void FrameDump::NoteDispatchSampled(u64 shader_hash, std::span<const Sampled> te
             texture, index,
             fmt::format("{:04}_dispatch{:04}_{:016x}_tex{:02}_tic{}", sequence++, dispatches,
                         shader_hash, index, texture.tic),
-            fmt::format(
-                R"("kind":"sampled","dispatch":{},"after_draws":{},"stage":{},"tic":{},"index":{},"shaders":["{:016x}"])",
-                dispatches, draws, texture.stage, texture.tic, index, shader_hash));
+            fmt::format(R"("kind":"sampled","dispatch":{},"after_draws":{},"stage":{},"tic":{},)"
+                        R"("index":{},{})",
+                        dispatches, draws, texture.stage, texture.tic, index,
+                        ShaderList(std::array{shader_hash})));
     }
 }
 
@@ -480,10 +486,12 @@ bool FrameDump::NoteBuffers(bool compute, std::span<const u64> shader_hashes,
                     : fmt::format(R"("pass":{},"draw":{})", pass_index, draws - 1);
         const bool from_host = buffer.guest.empty();
         std::string tags = fmt::format(
-            R"("kind":"buffer",{},"stage":{},"shader":"{:016x}","type":"{}","index":{},"written":{},"gpu_addr":"{:#x}","device_addr":"{:#x}","bound_size":{},"size":{},"gpu_modified":{},"source":"{}")",
-            owner, buffer.stage, shader, buffer.storage ? "storage" : "uniform", buffer.index,
-            buffer.written, buffer.gpu_addr, buffer.device_addr, buffer.bound_size, buffer.size,
-            buffer.gpu_modified, from_host ? "host" : "guest");
+            R"("kind":"buffer",{},"stage":{},"shader":"{:016x}","key":"{}","type":"{}",)"
+            R"("index":{},"written":{},"gpu_addr":"{:#x}","device_addr":"{:#x}",)"
+            R"("bound_size":{},"size":{},"gpu_modified":{},"source":"{}")",
+            owner, buffer.stage, shader, KeyOf(shader), buffer.storage ? "storage" : "uniform",
+            buffer.index, buffer.written, buffer.gpu_addr, buffer.device_addr, buffer.bound_size,
+            buffer.size, buffer.gpu_modified, from_host ? "host" : "guest");
         if (!from_host) {
             Enqueue({.tags = std::move(tags), .data = std::move(buffer.guest), .raw = true});
             continue;
@@ -496,9 +504,11 @@ bool FrameDump::NoteBuffers(bool compute, std::span<const u64> shader_hashes,
 void FrameDump::NoteLaunch(u64 shader_hash, const std::array<u32, 3>& grid,
                            const std::array<u32, 3>& block, std::optional<GPUVAddr> indirect,
                            std::optional<std::array<u32, 3>> indirect_grid) {
-    std::string tags = fmt::format(
-        R"({{"kind":"launch","dispatch":{},"after_draws":{},"shaders":["{:016x}"],"grid":[{},{},{}],"block":[{},{},{}])",
-        dispatches, draws, shader_hash, grid[0], grid[1], grid[2], block[0], block[1], block[2]);
+    std::string tags =
+        fmt::format(R"({{"kind":"launch","dispatch":{},"after_draws":{},{},"grid":[{},{},{}],)"
+                    R"("block":[{},{},{}])",
+                    dispatches, draws, ShaderList(std::array{shader_hash}), grid[0], grid[1],
+                    grid[2], block[0], block[1], block[2]);
     if (indirect) {
         tags += fmt::format(R"(,"indirect":"{:#x}")", *indirect);
     }
@@ -507,6 +517,34 @@ void FrameDump::NoteLaunch(u64 shader_hash, const std::array<u32, 3>& grid,
                             (*indirect_grid)[1], (*indirect_grid)[2]);
     }
     Enqueue({.tags = tags + "}"});
+}
+
+void FrameDump::NoteKeys(std::span<const u64> shader_hashes, std::span<const u64> keys) {
+    for (size_t index = 0; index < shader_hashes.size() && index < keys.size(); ++index) {
+        const u64 hash = shader_hashes[index];
+        if (hash == 0 || keys[index] == 0 ||
+            std::ranges::find(shader_keys, hash, &std::pair<u64, u64>::first) !=
+                shader_keys.end()) {
+            continue;
+        }
+        shader_keys.emplace_back(hash, keys[index]);
+    }
+}
+
+std::string FrameDump::KeyOf(u64 shader_hash) const {
+    const auto it = std::ranges::find(shader_keys, shader_hash, &std::pair<u64, u64>::first);
+    return it != shader_keys.end() ? fmt::format("{:016x}", it->second) : std::string{};
+}
+
+std::string FrameDump::ShaderList(std::span<const u64> hashes) const {
+    std::string shaders;
+    std::string keys;
+    for (const u64 hash : hashes) {
+        const char* const separator = shaders.empty() ? "" : ",";
+        shaders += fmt::format("{}\"{:016x}\"", separator, hash);
+        keys += fmt::format("{}\"{}\"", separator, KeyOf(hash));
+    }
+    return fmt::format(R"("shaders":[{}],"keys":[{}])", shaders, keys);
 }
 
 void FrameDump::NoteDraw(std::span<const u64> shader_hashes) {
@@ -524,19 +562,16 @@ bool FrameDump::EndPass() {
         return false;
     }
     pass_framebuffer = nullptr;
-    std::string shaders;
-    for (const u64 hash : pass_hashes) {
-        shaders += fmt::format("{}\"{:016x}\"", shaders.empty() ? "" : ",", hash);
-    }
+    const std::string shaders = ShaderList(pass_hashes);
     bool recorded = false;
     for (const Target& target : pass_targets) {
-        recorded |= Record(
-            target,
-            fmt::format("{:04}_pass{:03}_d{}-{}_rt{}", sequence++, pass_index, pass_first_draw,
-                        draws, target.slot),
-            fmt::format(R"("kind":"pass","pass":{},"first_draw":{},"draw_count":{},"slot":{},"shaders":[{}])",
-                        pass_index, pass_first_draw, draws - pass_first_draw, target.slot,
-                        shaders));
+        recorded |=
+            Record(target,
+                   fmt::format("{:04}_pass{:03}_d{}-{}_rt{}", sequence++, pass_index,
+                               pass_first_draw, draws, target.slot),
+                   fmt::format(
+                       R"("kind":"pass","pass":{},"first_draw":{},"draw_count":{},"slot":{},{})",
+                       pass_index, pass_first_draw, draws - pass_first_draw, target.slot, shaders));
     }
     ++pass_index;
     return recorded;
@@ -552,8 +587,8 @@ void FrameDump::CaptureDispatch(u64 shader_hash, std::span<ImageView* const> wri
         Record(*target,
                fmt::format("{:04}_dispatch{:04}_{:016x}_img{}", sequence++, dispatch, shader_hash,
                            slot),
-               fmt::format(R"("kind":"dispatch","dispatch":{},"after_draws":{},"slot":{},"shaders":["{:016x}"])",
-                           dispatch, draws, slot, shader_hash));
+               fmt::format(R"("kind":"dispatch","dispatch":{},"after_draws":{},"slot":{},{})",
+                           dispatch, draws, slot, ShaderList(std::array{shader_hash})));
     }
 }
 
@@ -726,7 +761,7 @@ void FrameDump::WriterLoop() {
                      << '\n';
             manifest.close();
             LOG_INFO(Render_Vulkan, "Frame dump done: {} images, {}, {} MiB in {}{}", images,
-                     job.tags, written_bytes >> 20, directory.string(),
+                     job.tags, written_bytes >> 20, Common::FS::PathToUTF8String(directory),
                      job.truncated ? fmt::format(" (stopped at the {} GiB cap)", SIZE_CAP >> 30)
                                    : "");
             if (const u64 id = schedule.CaptureId(); id != 0) {
@@ -867,7 +902,8 @@ void FrameDump::TickFrame() {
     std::filesystem::create_directories(directory, error);
     manifest.open(directory / "manifest.jsonl", std::ios::trunc);
     if (!manifest) {
-        LOG_ERROR(Render_Vulkan, "Frame dump: cannot write {}", directory.string());
+        LOG_ERROR(Render_Vulkan, "Frame dump: cannot write {}",
+                  Common::FS::PathToUTF8String(directory));
         if (const u64 id = schedule.CaptureId(); id != 0) {
             VideoCore::Nx2Debug::FinishCapture(
                 id, {.error = fmt::format("cannot write {}", directory.generic_string())});
@@ -878,9 +914,14 @@ void FrameDump::TickFrame() {
     const u64 frame = schedule.Frame();
     manifest << fmt::format(R"({{"kind":"frame","frame":{},"seconds":{:.3f}}})", frame, elapsed)
              << '\n';
+    shader_keys.clear();
     writer = std::thread{[this] { WriterLoop(); }};
+    const char* const extras =
+        schedule.Sampled()
+            ? (schedule.Buffers() ? " with sampled textures and buffers" : " with sampled textures")
+            : (schedule.Buffers() ? " with buffers" : "");
     LOG_INFO(Render_Vulkan, "Frame dump: capturing frame {} ({:.1f} s after boot){} into {}", frame,
-             elapsed, schedule.Sampled() ? (schedule.Buffers() ? " with sampled textures and buffers" : " with sampled textures") : (schedule.Buffers() ? " with buffers" : ""), directory.string());
+             elapsed, extras, Common::FS::PathToUTF8String(directory));
 }
 
 void FrameDumpSchedule::Configure(std::string_view at, std::filesystem::path trigger_file_,
@@ -938,10 +979,15 @@ void FrameDumpSchedule::Abort() {
 void FrameDumpSchedule::SetCapturing(bool value) {
     capturing = value;
     recording_sampled.store(value && sampled, std::memory_order_relaxed);
+    recording_capture.store(value, std::memory_order_relaxed);
 }
 
 bool RecordingSampledTextures() noexcept {
     return recording_sampled.load(std::memory_order_relaxed);
+}
+
+bool RecordingWrittenImages() noexcept {
+    return recording_capture.load(std::memory_order_relaxed);
 }
 
 } // namespace Vulkan

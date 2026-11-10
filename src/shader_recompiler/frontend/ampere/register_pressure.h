@@ -42,6 +42,7 @@ inline RegisterPressure PrepareRegisterPressure(const Instruction& input, u32 re
         operand(16);
         break;
     case 0xa0c:
+    case 0x634: // HSETP2 constant buffer: A is a register, outputs are predicates.
     case 0x804:
     case 0x80b:
     case 0x80c:

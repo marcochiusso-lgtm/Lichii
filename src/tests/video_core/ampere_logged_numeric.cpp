@@ -195,6 +195,8 @@ TEST_CASE("Logged Pokopia F2I preserves guards and rejects unrelated modifiers",
     CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
     invalid.words = {0x00157b05, 0x40400400, 0x0021e100, 0x0001e400};
     CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
+    invalid.words = {0x00157b05, 0x00400440, 0x0021e100, 0x0001e400};
+    CHECK_FALSE(LowerToMaxwell(std::array{invalid, Exit}));
 }
 
 TEST_CASE("Logged Pokopia SHF clamps instead of wrapping through production translation",

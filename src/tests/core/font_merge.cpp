@@ -71,6 +71,18 @@ std::uint16_t NumGlyphs(std::span<const std::uint8_t> font) {
 
 } // Anonymous namespace
 
+TEST_CASE("Built-in font source uses the merged standard font when available", "[core][font]") {
+    const std::array<std::uint8_t, 5> shared{1, 2, 3, 4, 5};
+    const std::array<std::uint8_t, 4> merged{7, 8, 9, 10};
+
+    const auto standard = Service::NS::SelectBuiltinFontSource(true, shared, 3, 4, merged);
+    CHECK(std::ranges::equal(standard, merged));
+    const auto fallback = Service::NS::SelectBuiltinFontSource(true, shared, 1, 2, {});
+    CHECK(std::ranges::equal(fallback, std::array<std::uint8_t, 2>{2, 3}));
+    const auto other = Service::NS::SelectBuiltinFontSource(false, shared, 2, 2, merged);
+    CHECK(std::ranges::equal(other, std::array<std::uint8_t, 2>{3, 4}));
+}
+
 TEST_CASE("MergeGlyphs adds the missing glyphs", "[core][font]") {
     const auto merged = Service::NS::MergeGlyphs(FONT_KOREAN, FONT_STANDARD, BUTTON_GLYPHS);
     REQUIRE_FALSE(merged.empty());
