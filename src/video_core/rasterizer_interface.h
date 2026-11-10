@@ -64,6 +64,12 @@ public:
     /// Dispatches an indirect draw invocation
     virtual void DrawIndirect() {}
 
+    /// Switch 2: draws the current state as a mesh task draw whose group count the GPU reads
+    /// from the GPU-written word at `count_addr`. False when it can't (the caller reads it).
+    virtual bool DrawMeshTasksFromGpu([[maybe_unused]] DAddr count_addr) {
+        return false;
+    }
+
     /// Dispatches an draw texture invocation
     virtual void DrawTexture() = 0;
 

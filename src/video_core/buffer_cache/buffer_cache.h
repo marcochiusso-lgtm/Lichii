@@ -3317,6 +3317,66 @@ void BufferCache<P>::Nx2NoteListWrite(BufferId buffer_id, DAddr device_addr, u64
 }
 
 template <class P>
+std::optional<u32> BufferCache<P>::Nx2MeshCountSlot(DAddr count_addr) {
+    if constexpr (IS_OPENGL) {
+        return std::nullopt;
+    } else {
+        constexpr DAddr page_size = DAddr{1} << Tegra::Nx2WrittenPageBits;
+        std::scoped_lock lock{nx2_list_mutex};
+        const auto [it, inserted] = nx2_mesh_slots.try_emplace(count_addr);
+        if (inserted) {
+            if (nx2_mesh_slots.size() > Runtime::Nx2MeshMirrorSlots) {
+                nx2_mesh_slots.erase(it);
+            } else {
+                it->second.index = static_cast<u32>(nx2_mesh_slots.size() - 1);
+            }
+            return std::nullopt;
+        }
+        const auto page = nx2_list_pages.find(count_addr & ~(page_size - 1));
+        if (!it->second.initialized || page == nx2_list_pages.end() ||
+            page->second.writes != it->second.mirrored_writes) {
+            return std::nullopt;
+        }
+        return it->second.index;
+    }
+}
+
+template <class P>
+void BufferCache<P>::Nx2MirrorMeshCounts(Buffer& buffer, DAddr begin, DAddr end, u64 writes) {
+    if constexpr (!IS_OPENGL) {
+        // Called with nx2_list_mutex held, right after the page's copy (outside a render pass).
+        if (nx2_mesh_slots.empty()) {
+            return;
+        }
+        constexpr u32 slot_size = Runtime::Nx2MeshMirrorSlotSize;
+        boost::container::small_vector<BufferCopy, 8> copies;
+        std::optional<decltype(runtime.Nx2MeshMirror())> mirror;
+        for (auto& [count_addr, slot] : nx2_mesh_slots) {
+            if (count_addr < begin || count_addr + sizeof(u32) > end) {
+                continue;
+            }
+            if (!mirror) {
+                mirror = runtime.Nx2MeshMirror();
+            }
+            if (!slot.initialized) {
+                runtime.ClearBuffer(*mirror, slot.index * slot_size + sizeof(u32),
+                                    2 * sizeof(u32), 1);
+                slot.initialized = true;
+            }
+            copies.push_back(BufferCopy{
+                .src_offset = buffer.Offset(count_addr),
+                .dst_offset = slot.index * slot_size,
+                .size = sizeof(u32),
+            });
+            slot.mirrored_writes = writes;
+        }
+        if (!copies.empty()) {
+            runtime.CopyBuffer(*mirror, buffer, copies, true);
+        }
+    }
+}
+
+template <class P>
 bool BufferCache<P>::Nx2CopyListPages(u64 tick) {
     if constexpr (IS_OPENGL) {
         return false;
@@ -3359,6 +3419,7 @@ bool BufferCache<P>::Nx2CopyListPages(u64 tick) {
             entry.copy_tick = tick;
             entry.copy_begin = static_cast<u32>(begin - page);
             entry.copy_end = static_cast<u32>(end - page);
+            Nx2MirrorMeshCounts(buffer, begin, end, entry.writes);
         }
         nx2_list_copy_requests.clear();
         std::erase_if(nx2_retired_list_copies, [this](auto& retired) {

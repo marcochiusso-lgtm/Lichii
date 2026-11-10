@@ -1519,6 +1519,41 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
     });
 }
 
+bool RasterizerVulkan::DrawMeshTasksFromGpu(DAddr count_addr) {
+    if (!device.IsExtMeshShaderSupported() || !maxwell3d->regs.IsMeshEnabled()) {
+        return false;
+    }
+    std::optional<u32> slot;
+    {
+        std::scoped_lock lock{buffer_cache.mutex};
+        slot = buffer_cache.Nx2MeshCountSlot(count_addr);
+    }
+    if (!slot) {
+        return false;
+    }
+    bool drawn = false;
+    PrepareDraw(
+        false,
+        [this, &drawn, offset = VkDeviceSize{*slot} * BufferCacheRuntime::Nx2MeshMirrorSlotSize] {
+            // Only a native task/mesh pipeline takes the count as is; anything else needs it on
+            // the CPU (the caller reads it and draws again).
+            if (!mesh_draw || mesh_emulation_vertices_per_group != 0) {
+                return;
+            }
+            scheduler.Record([this, mirror = buffer_cache_runtime.Nx2MeshMirror(),
+                              offset](vk::CommandBuffer cmdbuf) {
+                if (scheduler.GraphicsPipelineMissing()) {
+                    return;
+                }
+                cmdbuf.DrawMeshTasksIndirectEXT(mirror, offset, 1,
+                                                BufferCacheRuntime::Nx2MeshMirrorSlotSize);
+            });
+            drawn = true;
+        },
+        true);
+    return drawn;
+}
+
 void RasterizerVulkan::DrawIndirect() {
     VideoCommon::Nx2Profile::Scope profile_scope{VideoCommon::Nx2Profile::Zone::Draw};
     const auto& params = maxwell3d->draw_manager.indirect_state;

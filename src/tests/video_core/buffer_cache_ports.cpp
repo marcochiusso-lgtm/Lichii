@@ -183,6 +183,21 @@ struct Runtime {
     }
     void PreCopyBarrier() {}
     void PostCopyBarrier() {}
+    static constexpr u32 Nx2MeshMirrorSlots = 4;
+    static constexpr u32 Nx2MeshMirrorSlotSize = 3 * sizeof(u32);
+    Buffer* Nx2MeshMirror() {
+        if (!mesh_mirror) {
+            constexpr u32 size = Nx2MeshMirrorSlots * Nx2MeshMirrorSlotSize;
+            mesh_mirror = std::make_unique<Buffer>(*this, 0, size, false);
+        }
+        return mesh_mirror.get();
+    }
+    void ClearBuffer(Buffer* dst, u32 offset, size_t size, u32 value) {
+        REQUIRE(offset + size <= dst->bytes.size());
+        for (size_t word = 0; word < size; word += sizeof(value)) {
+            std::memcpy(dst->bytes.data() + offset + word, &value, sizeof(value));
+        }
+    }
     void BindUniformBuffer(Buffer&, u32, u32) {}
     std::span<u8> BindMappedUniformBuffer(size_t, u32, u32 size) {
         stream.resize(size);
@@ -195,6 +210,7 @@ struct Runtime {
     u64 upload_bytes{}, waited_tick{};
     u64 submitted_tick{}, completed_tick{};
     std::vector<std::unique_ptr<Buffer>> stagings;
+    std::unique_ptr<Buffer> mesh_mirror;
     std::vector<u8> stream;
     std::vector<std::function<void()>> pending;
     std::deque<std::pair<u64, std::vector<std::function<void()>>>> submitted;
@@ -305,6 +321,14 @@ struct BufferCacheTestAccess {
         auto& entry = cache.nx2_list_pages[page];
         entry.draw_written = true;
         ++entry.writes;
+    }
+    /// A write to a command list page whose copy follows (Nx2CopyListPages).
+    static void ListWrite(Cache& cache, BufferId id, DAddr page) {
+        {
+            std::scoped_lock lock{cache.nx2_list_mutex};
+            ++cache.nx2_list_pages[page].writes;
+        }
+        cache.nx2_list_copy_requests.emplace_back(id, page);
     }
     static void Download(Cache& cache, std::span<const std::pair<DAddr, u64>> ranges) {
         cache.DownloadRangesMemory(ranges);
@@ -2237,4 +2261,54 @@ TEST_CASE("Async read-back counts the reading thread's and the GPU side's waits 
     REQUIRE(counters.reader_waits.load() - reader_waits == 1);
     REQUIRE(counters.gpu_side_waits.load() - gpu_side_waits == 1);
     REQUIRE(f.runtime.host_read_waits == 2);
+}
+
+TEST_CASE("Mesh task count slots follow the copies of their command list page",
+          "[buffer_ports]") {
+    Fixture f;
+    const auto id = Access::Add(*f.cache, 0x20000, 0x1000);
+    auto& words = Access::Get(*f.cache, id).bytes;
+    const auto set_count = [&](u32 offset, u32 count) {
+        std::memcpy(words.data() + offset, &count, sizeof(count));
+    };
+    const auto mirror = [&](u32 slot) {
+        std::array<u32, 3> command{};
+        std::memcpy(command.data(),
+                    f.runtime.Nx2MeshMirror()->bytes.data() + slot * Runtime::Nx2MeshMirrorSlotSize,
+                    sizeof(command));
+        return command;
+    };
+    const auto copy_page = [&] {
+        Access::ListWrite(*f.cache, id, 0x20000);
+        f.cache->Nx2CopyListPages(1);
+        f.runtime.Finish();
+    };
+    set_count(0x10, 7);
+    // The first ask registers the word; it has a slot once a copy after a write mirrors it.
+    REQUIRE_FALSE(f.cache->Nx2MeshCountSlot(0x20010));
+    REQUIRE_FALSE(f.cache->Nx2MeshCountSlot(0x20010));
+    copy_page();
+    REQUIRE(f.cache->Nx2MeshCountSlot(0x20010) == 0U);
+    CHECK(mirror(0) == std::array<u32, 3>{7, 1, 1});
+
+    // A write to the page makes the slot stale until the copy that follows it.
+    set_count(0x10, 9);
+    Access::DrawWrite(*f.cache, 0x20000);
+    CHECK_FALSE(f.cache->Nx2MeshCountSlot(0x20010));
+    copy_page();
+    REQUIRE(f.cache->Nx2MeshCountSlot(0x20010) == 0U);
+    CHECK(mirror(0) == std::array<u32, 3>{9, 1, 1});
+
+    // Slots run out: a word past the last one never gets a slot (its draws read the count).
+    for (u32 offset = 0x20; offset <= 0x50; offset += 0x10) {
+        set_count(offset, offset);
+        REQUIRE_FALSE(f.cache->Nx2MeshCountSlot(0x20000 + offset));
+    }
+    copy_page();
+    for (u32 offset = 0x20; offset <= 0x40; offset += 0x10) {
+        const auto slot = f.cache->Nx2MeshCountSlot(0x20000 + offset);
+        REQUIRE(slot.has_value());
+        CHECK(mirror(*slot) == std::array<u32, 3>{offset, 1, 1});
+    }
+    CHECK_FALSE(f.cache->Nx2MeshCountSlot(0x20050));
 }

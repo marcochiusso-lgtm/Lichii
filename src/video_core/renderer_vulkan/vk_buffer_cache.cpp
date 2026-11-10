@@ -904,6 +904,26 @@ void BufferCacheRuntime::ReserveNullBuffer() {
     }
 }
 
+VkBuffer BufferCacheRuntime::Nx2MeshMirror() {
+    if (!nx2_mesh_mirror) {
+        const VkBufferCreateInfo create_info{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+            .size = VkDeviceSize{Nx2MeshMirrorSlots} * Nx2MeshMirrorSlotSize,
+            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices = nullptr,
+        };
+        nx2_mesh_mirror = memory_allocator.CreateBuffer(create_info, MemoryUsage::DeviceLocal);
+        if (device.HasDebuggingToolAttached()) {
+            nx2_mesh_mirror.SetObjectNameEXT("Mesh task count mirror");
+        }
+    }
+    return *nx2_mesh_mirror;
+}
+
 vk::Buffer BufferCacheRuntime::CreateNullBuffer() {
     VkBufferCreateInfo create_info{
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,

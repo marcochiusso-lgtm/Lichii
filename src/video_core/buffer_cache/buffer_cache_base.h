@@ -443,6 +443,11 @@ public:
     /// instead of waiting for it.
     Nx2ListRead Nx2ReadListCopy(DAddr device_addr, std::span<u8> out, bool past_sync,
                                 u64* pending_tick = nullptr);
+    /// Back thread: the slot of the runtime's mesh task count mirror (Nx2MeshMirror) that holds
+    /// {count, 1, 1} for the GPU-written word at `count_addr`, while the copy that followed the
+    /// last write to its command list page made it (Nx2CopyListPages). The first call for an
+    /// address registers it, and copies after later writes keep its slot current.
+    std::optional<u32> Nx2MeshCountSlot(DAddr count_addr);
     /// Front thread, the split drained: the command list page was flushed to guest memory.
     void Nx2NoteListSynced(DAddr page);
 
@@ -1132,6 +1137,15 @@ private:
     };
     std::mutex nx2_list_mutex; ///< nx2_list_pages: the split's front reads the copies
     std::unordered_map<DAddr, Nx2ListPage> nx2_list_pages;
+    /// A mesh task count word's slot in the mirror (Nx2MeshCountSlot).
+    struct Nx2MeshSlot {
+        u32 index{};
+        u64 mirrored_writes{~u64{0}}; ///< Its page's `writes` when the slot was last copied
+        bool initialized{};           ///< The slot's {_, 1, 1} constant words are written
+    };
+    std::unordered_map<DAddr, Nx2MeshSlot> nx2_mesh_slots;
+    /// Records copies of the registered mesh task counts in [begin, end) into their slots.
+    void Nx2MirrorMeshCounts(Buffer& buffer, DAddr begin, DAddr end, u64 writes);
     /// Copies replaced while the GPU may still write them: freed once it is past their tick.
     std::vector<std::pair<u64, Nx2Staging>> nx2_retired_list_copies;
     boost::container::small_vector<std::pair<BufferId, DAddr>, 8> nx2_list_copy_requests;

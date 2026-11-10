@@ -332,6 +332,8 @@ bool DmaPusher::Step() {
             Nx2CmdPageDiag::CountEntry(Nx2CmdPageDiag::Path::Safe);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
+        } else if (command_resume_offset == 0 && DrawFromGpuArguments(header)) {
+            // The entry's words are a draw macro's parameters, left in GPU memory.
         } else if (bool pending = false;
                    ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size),
                                           &pending) ||
@@ -749,6 +751,36 @@ bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
         }
     }
     return false;
+}
+
+bool DmaPusher::DrawFromGpuArguments(const CommandListHeader& header) {
+    // The entry before this one opened the macro's start method with exactly as many words as
+    // this entry holds, and the GPU wrote them (the culling dispatch that sets task counts).
+    // Every word sent to a macro method is its next parameter, whatever the header's mode (the
+    // usual call is IncreaseOnce: the start method, then its parameter method).
+    auto& split = VideoCommon::GpuSplit::Get();
+    if (!split.Active() || !split.FrontMacros() || !g_nx2_ampere.load(std::memory_order_relaxed) ||
+        dma_state.method_count != header.size || dma_state.method < MacroRegistersStart ||
+        subchannels[dma_state.subchannel] == nullptr ||
+        subchannel_type[dma_state.subchannel] != Engines::EngineTypes::Maxwell3D) {
+        return false;
+    }
+    const GPUVAddr address = dma_state.dma_get;
+    const auto device = memory_manager.GpuToCpuAddress(address);
+    if (!device || !Tegra::Nx2IsGpuWritten(*device)) {
+        return false;
+    }
+    auto* const maxwell3d = static_cast<Engines::Maxwell3D*>(subchannels[dma_state.subchannel]);
+    if (!maxwell3d->GetNativeMacroEngine().native_turing ||
+        !maxwell3d->FrontDrawFromGpuArguments(system, split, dma_state.method, address,
+                                              static_cast<u32>(header.size))) {
+        return false;
+    }
+    // The buffer cache keeps the words' slot current after each write (Nx2MeshCountSlot).
+    Tegra::Nx2MarkCommandListPage(*device);
+    RecordParsedEntry(header, {});
+    dma_state.method_count = 0;
+    return true;
 }
 
 bool DmaPusher::ReadGpuWrittenCommands(GPUVAddr address, u32 count, bool* pending) {
