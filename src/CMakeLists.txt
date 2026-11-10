@@ -87,6 +87,13 @@ if (MSVC AND NOT CXX_CLANG)
     # /Zc:preprocessor    - Enable standards-conforming preprocessor
     # /Zc:throwingNew     - Let codegen assume `operator new` (without std::nothrow) will never return null
     # /GT                 - Supports fiber safety for data allocated using static thread-local storage
+    # Keep these diagnostics as warnings when errors are disabled.
+    if (ENABLE_WERROR)
+        set(YUZU_MSVC_DIAGNOSTIC_PREFIX /we)
+    else()
+        set(YUZU_MSVC_DIAGNOSTIC_PREFIX /w4)
+    endif()
+
     add_compile_options(
         /MP
         /Zm200
@@ -106,23 +113,23 @@ if (MSVC AND NOT CXX_CLANG)
         /external:anglebrackets # Treats all headers included by #include <header>, where the header file is enclosed in angle brackets (< >), as external headers
         /external:W0            # Sets the default warning level to 0 for external headers, effectively disabling warnings for them.
 
-        /we4062 # Enumerator 'identifier' in a switch of enum 'enumeration' is not handled
-        /we4189 # 'identifier': local variable is initialized but not referenced
-        /we4265 # 'class': class has virtual functions, but destructor is not virtual
-        /we4388 # 'expression': signed/unsigned mismatch
-        /we4389 # 'operator': signed/unsigned mismatch
-        /we4456 # Declaration of 'identifier' hides previous local declaration
-        /we4457 # Declaration of 'identifier' hides function parameter
-        /we4458 # Declaration of 'identifier' hides class member
-        /we4459 # Declaration of 'identifier' hides global declaration
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4062 # Enumerator 'identifier' in a switch of enum 'enumeration' is not handled
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4189 # 'identifier': local variable is initialized but not referenced
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4265 # 'class': class has virtual functions, but destructor is not virtual
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4388 # 'expression': signed/unsigned mismatch
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4389 # 'operator': signed/unsigned mismatch
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4456 # Declaration of 'identifier' hides previous local declaration
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4457 # Declaration of 'identifier' hides function parameter
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4458 # Declaration of 'identifier' hides class member
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4459 # Declaration of 'identifier' hides global declaration
         /w44505 # 'function': unreferenced local function has been removed
-        /we4547 # 'operator': operator before comma has no effect; expected operator with side-effect
-        /we4549 # 'operator1': operator before comma has no effect; did you intend 'operator2'?
-        /we4555 # Expression has no effect; expected expression with side-effect
-        /we4826 # Conversion from 'type1' to 'type2' is sign-extended. This may cause unexpected runtime behavior.
-        /we5038 # data member 'member1' will be initialized after data member 'member2'
-        /we5233 # explicit lambda capture 'identifier' is not used
-        /we5245 # 'function': unreferenced function with internal linkage has been removed
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4547 # 'operator': operator before comma has no effect; expected operator with side-effect
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4549 # 'operator1': operator before comma has no effect; did you intend 'operator2'?
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4555 # Expression has no effect; expected expression with side-effect
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}4826 # Conversion from 'type1' to 'type2' is sign-extended. This may cause unexpected runtime behavior.
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}5038 # data member 'member1' will be initialized after data member 'member2'
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}5233 # explicit lambda capture 'identifier' is not used
+        ${YUZU_MSVC_DIAGNOSTIC_PREFIX}5245 # 'function': unreferenced function with internal linkage has been removed
 
         /wd4100 # 'identifier': unreferenced formal parameter
         /wd4324 # 'struct_name': structure was padded due to __declspec(align())
