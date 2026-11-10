@@ -1456,7 +1456,15 @@ bool TextureCache<P>::BlitImage(const Tegra::Engines::Fermi2D::Surface& dst,
     const std::optional src_base = src_image.TryFindBase(src.Address());
     const SubresourceRange src_range{.base = src_base.value(), .extent = {1, 1}};
     const ImageViewInfo src_view_info(ImageViewType::e2D, images.src_format, src_range);
-    const auto [src_framebuffer_id, src_view_id] = RenderTargetFromImage(src_id, src_view_info);
+    // Vulkan samples the source in a shader: a view is enough, and the source format need not be
+    // renderable (E5B9G9R9).
+    [[maybe_unused]] FramebufferId src_framebuffer_id;
+    ImageViewId src_view_id;
+    if constexpr (FRAMEBUFFER_BLITS) {
+        std::tie(src_framebuffer_id, src_view_id) = RenderTargetFromImage(src_id, src_view_info);
+    } else {
+        src_view_id = FindOrEmplaceImageView(src_id, src_view_info);
+    }
     const auto [src_samples_x, src_samples_y] = SamplesLog2(src_image.info.num_samples);
     Region2D src_region{
         Offset2D{.x = copy.src_x0 >> src_samples_x, .y = copy.src_y0 >> src_samples_y},

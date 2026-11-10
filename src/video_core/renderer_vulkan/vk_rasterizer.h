@@ -286,6 +286,7 @@ private:
     AccelerateDMA accelerate_dma;
     FenceManager fence_manager;
     FrameDump frame_dump;
+    s32 bound_channel_id = -1;
 
     boost::container::static_vector<u32, MAX_IMAGE_VIEWS> image_view_indices;
     std::array<VideoCommon::ImageViewId, MAX_IMAGE_VIEWS> image_view_ids;

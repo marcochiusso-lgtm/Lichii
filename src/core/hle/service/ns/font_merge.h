@@ -3,11 +3,21 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <vector>
 
 namespace Service::NS {
+
+inline std::span<const std::uint8_t> SelectBuiltinFontSource(
+    bool standard, std::span<const std::uint8_t> shared, std::size_t offset, std::size_t size,
+    std::span<const std::uint8_t> merged_standard) {
+    if (standard && !merged_standard.empty()) {
+        return merged_standard;
+    }
+    return shared.subspan(offset, size);
+}
 
 /// Returns a copy of the TrueType font `base` with the glyphs for `codepoints` that `donor` has and
 /// `base` lacks added to it (outline, advance, and character map entry).

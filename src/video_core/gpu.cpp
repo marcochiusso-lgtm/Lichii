@@ -4,13 +4,16 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <utility>
+#include <vector>
 
 #include "common/assert.h"
 #include "common/scope_exit.h"

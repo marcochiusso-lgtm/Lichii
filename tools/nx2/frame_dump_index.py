@@ -51,6 +51,7 @@ def card(entry):
                    + (" rescaled" if entry.get("rescaled") else "")),
         ("gpu", entry.get("gpu_addr", "-")),
         ("shaders", " ".join(entry.get("shaders", [])) or "-"),
+        ("keys", " ".join(key or "-" for key in entry.get("keys", [])) or "-"),
         ("min", fmt_list(entry.get("min"))),
         ("max", fmt_list(entry.get("max"))),
         ("mean", fmt_list(entry.get("mean"))),
@@ -82,7 +83,7 @@ def main():
         sys.exit(__doc__)
     root = Path(sys.argv[1])
     entries, header, summary = [], {}, {}
-    for line in (root / "manifest.jsonl").read_text().splitlines():
+    for line in (root / "manifest.jsonl").read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         entry = json.loads(line)
@@ -106,7 +107,7 @@ def main():
             "alpha is not shown. Exact values are in the .raw.zst files (tightly packed rows).</p>"
             f'<div class="grid">{"".join(card(e) for e in entries)}</div>')
     out = root / "index.html"
-    out.write_text(page)
+    out.write_text(page, encoding="utf-8")
     print(f"{out}: {len(entries)} entries")
 
 

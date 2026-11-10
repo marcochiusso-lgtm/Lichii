@@ -22,6 +22,10 @@
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/system_archive/system_archive.h"
 #include "core/hle/kernel/k_shared_memory.h"
+#include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_transfer_memory.h"
+#include "core/hle/kernel/svc_results.h"
+#include "core/memory.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "common/alignment.h"
@@ -89,9 +93,43 @@ void EncryptSharedFont(const std::vector<u32>& input, std::vector<u8>& output, s
     offset += transformed_font.size() * sizeof(u32);
 }
 
+class INx2FontService final : public ServiceFramework<INx2FontService> {
+public:
+    explicit INx2FontService(Core::System& system_, std::vector<FontRegion> regions_)
+        : ServiceFramework{system_, "nx2:pl:font"}, regions{std::move(regions_)} {
+        static const FunctionInfo functions[] = {
+            {0, &INx2FontService::GetFontData, "GetFontData"},
+        };
+        RegisterHandlers(functions);
+    }
+
+private:
+    void GetFontData(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const u32 type = rp.Pop<u32>() & 0xff;
+        const bool found = type < regions.size() && regions[type].size != 0;
+        const FontRegion region = found ? regions[type] : EMPTY_REGION;
+        LOG_INFO(Service_NS, "Switch 2 font type {}: found {}, offset {:#x}, size {:#x}",
+                 type, found, region.offset, region.size);
+        IPC::ResponseBuilder rb{ctx, 6};
+        rb.Push(ResultSuccess);
+        rb.Push<u32>(found ? 1 : 0);
+        rb.Push<u32>(0);
+        rb.Push<u32>(region.offset);
+        rb.Push<u32>(region.size);
+    }
+
+    std::vector<FontRegion> regions;
+};
+
 struct IPlatformServiceManager::Impl {
     const FontRegion& GetSharedFontRegion(std::size_t index) const {
         return index < shared_font_regions.size() ? shared_font_regions[index] : EMPTY_REGION;
+    }
+    std::span<const u8> GetBuiltInFontSource(std::size_t index) const {
+        return SelectBuiltinFontSource(
+            index == static_cast<size_t>(SharedFontType::JapanUSEuropeStandard), shared_font,
+            builtin_font_sources[index], builtin_font_regions[index].size, builtin_standard_font);
     }
     // Automatically populated based on shared_fonts dump or system archives.
     // 6 builtin fonts + extra 2 for whatever may come after
@@ -130,6 +168,7 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
         {106, nullptr, "GetFunctionBlackListVersion"},
         {1000, nullptr, "LoadNgWordDataForPlatformRegionChina"},
         {1001, nullptr, "GetNgWordDataSizeForPlatformRegionChina"},
+        {2100, &IPlatformServiceManager::RequestLoadNxFont, "RequestLoadNxFont"},
         {2000, &IPlatformServiceManager::GetBuiltInFontSharedMemory, "GetBuiltInFontSharedMemory (Switch 2)"},
         {2010, &IPlatformServiceManager::GetBuiltInFontData, "GetBuiltInFontData (Switch 2)"},
     };
@@ -212,6 +251,43 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
     impl->builtin_font_memory_size = std::max<u32>(builtin_offset, 0x1000);
 }
 
+// The Nx font SDK supplies transfer memory and expects an interface whose offsets refer to it.
+void IPlatformServiceManager::RequestLoadNxFont(HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const u32 flags = rp.Pop<u32>();
+    const u32 requested_size = rp.Pop<u32>();
+    auto transfer_object = ctx.GetObjectFromHandle<Kernel::KTransferMemory>(ctx.GetCopyHandle(0));
+    auto* const transfer = transfer_object.GetPointerUnsafe();
+    if (!transfer || !transfer->GetOwner()) {
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(Kernel::ResultInvalidHandle);
+        return;
+    }
+    if (requested_size > transfer->GetSize() || requested_size < impl->builtin_font_memory_size) {
+        LOG_ERROR(Service_NS, "Font transfer memory too small: requested {:#x}, transfer {:#x}, fonts {:#x}",
+                  requested_size, transfer->GetSize(), impl->builtin_font_memory_size);
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(Kernel::ResultInvalidSize);
+        return;
+    }
+    LOG_INFO(Service_NS, "Loading Switch 2 Nx fonts into transfer memory: flags {:#x}, size {:#x}",
+             flags, requested_size);
+    auto& memory = transfer->GetOwner()->GetMemory();
+    const auto address = transfer->GetSourceAddress();
+    for (size_t i = 0; i < impl->builtin_font_regions.size(); ++i) {
+        const auto& region = impl->builtin_font_regions[i];
+        if (region.size != 0) {
+            const auto source = impl->GetBuiltInFontSource(i);
+            memory.WriteBlock(address + region.offset, source.data(), source.size());
+        }
+    }
+    std::vector<FontRegion> regions{impl->builtin_font_regions.begin(),
+                                    impl->builtin_font_regions.end()};
+    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+    rb.Push(ResultSuccess);
+    rb.PushIpcInterface<INx2FontService>(ctx, system, std::move(regions));
+}
+
 // Switch 2: the shared memory GetBuiltInFontData offsets point into (copy handle, u32 size); the
 // SDK maps it read-only. It holds plain copies of the fonts, apart from the Switch 1 font memory.
 void IPlatformServiceManager::GetBuiltInFontSharedMemory(HLERequestContext& ctx) {
@@ -235,13 +311,8 @@ void IPlatformServiceManager::GetBuiltInFontSharedMemory(HLERequestContext& ctx)
         u8* const data = memory->GetPointer();
         std::memset(data, 0, impl->builtin_font_memory_size);
         for (size_t i = 0; i < impl->builtin_font_regions.size(); ++i) {
-            const u8* source = impl->shared_font.data() + impl->builtin_font_sources[i];
-            if (i == static_cast<size_t>(SharedFontType::JapanUSEuropeStandard) &&
-                !impl->builtin_standard_font.empty()) {
-                source = impl->builtin_standard_font.data();
-            }
-            std::memcpy(data + impl->builtin_font_regions[i].offset, source,
-                        impl->builtin_font_regions[i].size);
+            const auto source = impl->GetBuiltInFontSource(i);
+            std::memcpy(data + impl->builtin_font_regions[i].offset, source.data(), source.size());
         }
         impl->builtin_font_memory = memory;
     }

@@ -28,6 +28,7 @@
 #include "core/file_sys/nup_container.h"
 #include "core/file_sys/nup_writer.h"
 #include "core/file_sys/vfs/vfs_real.h"
+#include "core/loader/deconstructed_rom_directory.h"
 #include "core/loader/nup.h"
 
 namespace {
@@ -844,4 +845,38 @@ TEST_CASE("NUP metadata fails safely for invalid paths and incomplete archives",
     bytes[Toc + 40] ^= 1;
     Write(archive, bytes);
     RejectUnchanged(archive, {.title_name = "new title"});
+}
+
+TEST_CASE("Loose ExeFS names follow game folder layout", "[loose_exefs_title]") {
+    TempDir temp;
+    for (const auto& layout : {"Cafe/exefs", "BEEF/base/exefs",
+                               "Cafe/updates/0100000000000001/exefs", "Cafe/UpDaTe/ExeFS"}) {
+        const auto dir = temp.path / "games" / layout;
+        fs::create_directories(dir);
+        Write(dir / "main", "synthetic main");
+        FileSys::RealVfsFilesystem real;
+        Loader::AppLoader_DeconstructedRomDirectory loader{
+            real.OpenFile((dir / "main").string(), FileSys::OpenMode::Read), false};
+        std::string title;
+        REQUIRE(loader.ReadTitle(title) == Loader::ResultStatus::Success);
+        CHECK(title == (std::string_view(layout).starts_with("BEEF") ? "BEEF" : "Cafe"));
+    }
+}
+
+TEST_CASE("Loose ExeFS metadata takes priority over the folder title", "[loose_exefs_title]") {
+    TempDir temp;
+    const auto dir = temp.path / "Cafe/exefs";
+    fs::create_directories(dir);
+    Write(dir / "main", "synthetic main");
+    std::string nacp(0x4000, '\0');
+    for (size_t i = 0; i < 16; ++i) {
+        nacp.replace(i * 0x300, 14, "Metadata title");
+    }
+    Write(temp.path / "Cafe/control.nacp", nacp);
+    FileSys::RealVfsFilesystem real;
+    Loader::AppLoader_DeconstructedRomDirectory loader{
+        real.OpenFile((dir / "main").string(), FileSys::OpenMode::Read), false};
+    std::string title;
+    REQUIRE(loader.ReadTitle(title) == Loader::ResultStatus::Success);
+    CHECK(title == "Metadata title");
 }

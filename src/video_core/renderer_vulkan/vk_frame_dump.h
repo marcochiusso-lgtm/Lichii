@@ -85,15 +85,19 @@ private:
 /// reads them back runs, so other frames skip the copies.
 [[nodiscard]] bool RecordingSampledTextures() noexcept;
 
+/// Whether compute pipelines keep the images each dispatch writes: while any capture runs.
+[[nodiscard]] bool RecordingWrittenImages() noexcept;
+
 /// EDEN_NX2_FRAME_DUMP=<dir> reads back one whole frame: the color targets of every pass, the
 /// images written by every compute dispatch and the presented image. EDEN_NX2_FRAME_DUMP_AT picks
 /// the frame, in seconds after boot ("45") or as a frame number ("2700f").
 /// EDEN_NX2_FRAME_DUMP_SAMPLED=1 also reads back every texture a pass samples (3D and depth
 /// included), once per pass, as the first draw sampling it sees it, and the textures each compute
 /// shader samples, once per shader, before its first dispatch, with each texture's sampler state,
-/// and the uniform and storage buffers of every draw and dispatch, once per shader and binding, with
-/// each dispatch's group counts. Readbacks are encoded and written on a worker thread so the
-/// capture does not stall the game.
+/// and the uniform and storage buffers of every draw and dispatch, once per shader and binding,
+/// with each dispatch's group counts. Readbacks are encoded and written on a worker thread so the
+/// capture does not stall the game. Next to each list of shader hashes ("shaders") the manifest
+/// has the native program keys of those shaders ("keys", "" where unknown).
 class FrameDump {
 public:
     struct Sampled {
@@ -149,6 +153,8 @@ public:
     void NoteLaunch(u64 shader_hash, const std::array<u32, 3>& grid,
                     const std::array<u32, 3>& block, std::optional<GPUVAddr> indirect,
                     std::optional<std::array<u32, 3>> indirect_grid);
+    /// Remembers the native program keys of shader hashes (0 where not native) for the manifest.
+    void NoteKeys(std::span<const u64> shader_hashes, std::span<const u64> keys);
 
     /// Starts a pass when the framebuffer changes and captures the previous one.
     /// Returns true when copies were recorded, which ends the current render pass.
@@ -206,6 +212,10 @@ private:
     };
 
     std::optional<Target> MakeTarget(ImageView& view, u32 slot) const;
+    /// "shaders":[...],"keys":[...] for these hashes.
+    std::string ShaderList(std::span<const u64> hashes) const;
+    /// The native program key of a shader hash as 16 hex digits, or "" when unknown.
+    std::string KeyOf(u64 shader_hash) const;
     static u32 TexelBytes(const Target& target);
     static int Decode(const Target& target, const u8* pixel, std::array<float, 4>& out);
     bool Record(const Target& target, std::string name, std::string tags);
@@ -246,6 +256,8 @@ private:
     std::vector<std::tuple<u64, bool, u32, u64, u32>> seen_buffers;
     /// Content hashes of the buffer files written; writer thread only.
     std::vector<u64> written_buffers;
+    /// (shader hash, native program key) of the shaders seen this capture.
+    std::vector<std::pair<u64, u64>> shader_keys;
     u32 pass_index{};
     u32 pass_first_draw{};
     u32 draws{};

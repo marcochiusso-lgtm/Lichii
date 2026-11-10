@@ -18,6 +18,7 @@ TEST_CASE("Frame dump schedule is idle until configured or armed", "[frame_dump_
     REQUIRE(schedule.Tick(100.0) == Step::None);
     REQUIRE_FALSE(schedule.Capturing());
     REQUIRE_FALSE(Vulkan::RecordingSampledTextures());
+    REQUIRE_FALSE(Vulkan::RecordingWrittenImages());
 }
 
 TEST_CASE("Frame dump schedule records sampled textures for an armed sampled capture",
@@ -28,6 +29,7 @@ TEST_CASE("Frame dump schedule records sampled textures for an armed sampled cap
     // The pipelines read the flag while the captured frame is drawn, between Start and Finish.
     REQUIRE(schedule.Tick(0.0) == Step::Start);
     REQUIRE(schedule.Capturing());
+    REQUIRE(Vulkan::RecordingWrittenImages());
     REQUIRE(schedule.Sampled());
     REQUIRE_FALSE(schedule.Buffers());
     REQUIRE(schedule.CaptureId() == 7);
@@ -35,6 +37,7 @@ TEST_CASE("Frame dump schedule records sampled textures for an armed sampled cap
     REQUIRE_FALSE(schedule.Arm(false, false, 8));
     REQUIRE(schedule.Tick(0.0) == Step::Finish);
     REQUIRE_FALSE(schedule.Capturing());
+    REQUIRE_FALSE(Vulkan::RecordingWrittenImages());
     REQUIRE_FALSE(Vulkan::RecordingSampledTextures());
     REQUIRE(schedule.Tick(0.0) == Step::None);
 
@@ -43,6 +46,7 @@ TEST_CASE("Frame dump schedule records sampled textures for an armed sampled cap
     REQUIRE(schedule.Tick(0.0) == Step::Start);
     REQUIRE(schedule.CaptureId() == 8);
     REQUIRE_FALSE(Vulkan::RecordingSampledTextures());
+    REQUIRE(Vulkan::RecordingWrittenImages());
     REQUIRE(schedule.Tick(0.0) == Step::Finish);
 
     REQUIRE(schedule.Arm(true, false, 9));
@@ -51,6 +55,7 @@ TEST_CASE("Frame dump schedule records sampled textures for an armed sampled cap
     schedule.Abort();
     REQUIRE_FALSE(schedule.Capturing());
     REQUIRE_FALSE(Vulkan::RecordingSampledTextures());
+    REQUIRE_FALSE(Vulkan::RecordingWrittenImages());
     REQUIRE(schedule.Tick(0.0) == Step::None);
 }
 
@@ -106,5 +111,6 @@ TEST_CASE("Frame dump schedule follows EDEN_NX2_FRAME_DUMP_AT", "[frame_dump_sch
     }
     REQUIRE(by_file.Tick(1000.0) == Step::Start);
     REQUIRE(by_file.Frame() == 90);
+    REQUIRE(by_file.Tick(1000.0) == Step::Finish);
     std::filesystem::remove_all(directory);
 }

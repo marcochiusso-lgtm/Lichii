@@ -194,6 +194,30 @@ TEST_CASE("Mesh fallback leaves native task and mesh programs as mesh shaders",
     Dump(task, "native-task");
     REQUIRE(Model(task) == spv::ExecutionModel::TaskEXT);
     REQUIRE(UsesStorageClass(task, spv::StorageClass::TaskPayloadWorkgroupEXT));
+
+    const auto instructions = Instructions(task);
+    const auto payload = std::ranges::find_if(instructions, [](const Instruction& inst) {
+        return inst.op == spv::Op::OpVariable &&
+               inst.operands[2] == static_cast<u32>(spv::StorageClass::TaskPayloadWorkgroupEXT);
+    });
+    REQUIRE(payload != instructions.end());
+    const auto count_pointer =
+        std::find_if(payload + 1, instructions.end(), [&](const Instruction& inst) {
+            return inst.op == spv::Op::OpAccessChain && inst.operands[2] == payload->operands[1];
+        });
+    REQUIRE(count_pointer != instructions.end());
+    const auto clear =
+        std::find_if(count_pointer + 1, instructions.end(), [&](const Instruction& inst) {
+            return inst.op == spv::Op::OpStore && inst.operands[0] == count_pointer->operands[1] &&
+                   std::ranges::any_of(instructions, [&](const Instruction& constant) {
+                       return constant.op == spv::Op::OpConstant && constant.operands.size() == 3 &&
+                              constant.operands[1] == inst.operands[1] && constant.operands[2] == 0;
+                   });
+        });
+    REQUIRE(clear != instructions.end());
+    REQUIRE(std::find_if(clear + 1, instructions.end(), [](const Instruction& inst) {
+        return inst.op == spv::Op::OpControlBarrier;
+    }) != instructions.end());
 }
 
 TEST_CASE("Mesh fallback emits mesh programs as compute shaders writing storage buffers",

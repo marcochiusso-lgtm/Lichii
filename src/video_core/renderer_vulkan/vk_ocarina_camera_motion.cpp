@@ -578,12 +578,12 @@ struct OcarinaFrameSlot {
 } // namespace
 
 struct OcarinaLiveDlss::Impl {
-    Impl(const Device& device_, Scheduler& scheduler_, DescriptorPool& pool,
+    Impl(const Device& device_, Scheduler& scheduler_, DescriptorPool& pool_,
          ComputePassDescriptorQueue& queue_, MemoryAllocator& allocator_)
-        : device{device_}, scheduler{scheduler_}, queue{queue_}, allocator{allocator_}, pool{pool},
-          upscaler{device, scheduler, allocator}, motion_pass{device, scheduler, pool},
-          color_pass{device, scheduler, pool},
-          output_pass{device, scheduler, pool, OCARINA_DLSS_OUTPUT_COMP_SPV} {}
+        : device{device_}, scheduler{scheduler_}, queue{queue_}, allocator{allocator_}, pool{pool_},
+          upscaler{device, scheduler, allocator}, motion_pass{device, scheduler, pool_},
+          color_pass{device, scheduler, pool_},
+          output_pass{device, scheduler, pool_, OCARINA_DLSS_OUTPUT_COMP_SPV} {}
 
     const Device& device;
     Scheduler& scheduler;

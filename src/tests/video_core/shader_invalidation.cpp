@@ -9,6 +9,7 @@
 #include <string_view>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
+#include "common/scope_exit.h"
 #include "core/device_memory.h"
 #include "video_core/nx2_debug_control.h"
 #include "video_core/shader_cache.h"
@@ -125,6 +126,11 @@ TEST_CASE("Debug server rejections drop matching native programs", "[shader_inva
 
     VideoCore::Nx2Debug::BeginSession();
     const std::array<u64, 2> rejected{0xaaaa, 0x22};
+    SCOPE_EXIT {
+        (void)VideoCore::Nx2Debug::SetRejected(rejected, false);
+        (void)VideoCore::Nx2Debug::TakeRejectChange();
+        VideoCore::Nx2Debug::EndSession();
+    };
     const u64 generation = VideoCore::Nx2Debug::SetRejected(rejected, true);
     const auto change = VideoCore::Nx2Debug::TakeRejectChange();
     REQUIRE(change);
@@ -146,7 +152,6 @@ TEST_CASE("Debug server rejections drop matching native programs", "[shader_inva
     cache->RefreshDebugRejections(undo->unrejected);
     REQUIRE_FALSE(ShaderCacheTestAccess::IsRejected(*cache, earlier));
     REQUIRE(VideoCore::Nx2Debug::RejectedHashes() == std::vector<u64>{0x22});
-    VideoCore::Nx2Debug::EndSession();
 }
 
 TEST_CASE("A remembered rejection marks its page so filtered writes still clear it",

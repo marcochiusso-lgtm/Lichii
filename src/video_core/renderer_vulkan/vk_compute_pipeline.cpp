@@ -262,10 +262,7 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
         };
         // Only warp-level ops observe the subgroup size. Forcing 32 on other shaders makes Intel
         // compile SIMD32, which can spill a register-heavy kernel for minutes (Mario Kart World).
-        const bool uses_warp_ops = info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
-                                   info.uses_subgroup_shuffles || info.uses_subgroup_mask ||
-                                   info.uses_quad_shuffles || info.uses_fswzadd ||
-                                   info.uses_cooperative_matrix;
+        const bool uses_warp_ops = info.UsesWarpOps() || info.uses_cooperative_matrix;
         VkPipelineCreateFlags flags{};
         if (device.IsKhrPipelineExecutablePropertiesEnabled() && Settings::values.renderer_debug.GetValue()) {
             flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
@@ -541,7 +538,7 @@ bool ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
     written_images.clear();
     for (const auto& desc : info.image_descriptors) {
         for (u32 i = 0; i < desc.count; ++i, ++image_index) {
-            if (desc.is_written) {
+            if (desc.is_written && (RecordingWrittenImages() || deferred_bind)) {
                 written_images.push_back(views[image_index].id);
             }
             const auto& view{texture_cache.GetImageView(views[image_index].id)};

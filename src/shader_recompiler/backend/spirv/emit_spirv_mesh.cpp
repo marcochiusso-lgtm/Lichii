@@ -348,6 +348,9 @@ void EmitMeshPrologue(EmitContext& ctx) {
     const bool as_compute{ctx.runtime_info.mesh_as_compute};
     if (ctx.stage == Stage::Task) {
         if (!as_compute) {
+            // A task that writes no workgroup count must not launch an undefined count.
+            ctx.OpStore(PayloadWord(ctx, ctx.Const(1U)), ctx.u32_zero_value);
+            Barrier(ctx);
             return;
         }
     } else if (ctx.stage != Stage::Mesh) {
