@@ -120,6 +120,10 @@ struct Profile {
 
     /// Maxwell and earlier nVidia architectures have broken robust support
     bool has_broken_robust{};
+    /// RADV before Mesa 26.2.5 keeps stale vertex user SGPR state when a mesh shader without the
+    /// grid size or draw index is bound, and the next mesh draw hangs the GPU (Mesa MR 45092).
+    /// Native mesh shaders read the grid size there so that RADV gives them that SGPR.
+    bool has_broken_mesh_user_sgprs{};
 
     u64 min_ssbo_alignment{};
     u32 max_user_clip_distances{};
