@@ -7,6 +7,7 @@
 #pragma once
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <deque>
 #include <limits>
@@ -187,6 +188,40 @@ class TextureCache : public VideoCommon::ChannelSetupCaches<TextureCacheChannelI
     u64 scale_epoch{};
     std::map<u64, std::pair<u32, GPUVAddr>> created_shapes;
     bool debug_stats{}; ///< Collect what only the debug statistics lines use
+    /// EDEN_NX2_RT_EVICT_PRESSURE: fresh render targets to check, with their allocation tick and
+    /// how often they were found still in use.
+    struct TransientTarget {
+        ImageId id;
+        u64 allocation_tick;
+        u64 check_tick;
+        u32 survived;
+    };
+    std::deque<TransientTarget> transient_targets;
+    u64 transient_evictions{};
+    u64 logged_transient_evictions{};
+    /// Image made by the latest JoinImages call; FindRenderTargetView uses it to tell a target it
+    /// just created from one that already existed (and may hold CPU writes not uploaded yet).
+    ImageId last_created_image{};
+    /// EDEN_NX2_RT_EVICT_PRESSURE=<frames> (default 8, 0 = off): how long a fresh render target
+    /// may go unused before it is deleted while the cache is over its expected size. A value that
+    /// isn't a plain number of frames (empty, negative, other text, out of range) keeps the default.
+    [[nodiscard]] static u64 RtEvictPressureFrames() {
+        static const u64 frames = [] {
+            constexpr u64 default_frames = 8;
+            const char* value = std::getenv("EDEN_NX2_RT_EVICT_PRESSURE");
+            if (value == nullptr || *value < '0' || *value > '9') {
+                return default_frames;
+            }
+            char* end = nullptr;
+            errno = 0;
+            const unsigned long long parsed = std::strtoull(value, &end, 10);
+            if (errno != 0 || *end != '\0') {
+                return default_frames;
+            }
+            return static_cast<u64>(parsed);
+        }();
+        return frames;
+    }
     /// EDEN_NX2_MEM_TRACE: when the last memory trace lines were logged.
     std::chrono::steady_clock::time_point mem_trace_time{};
 
