@@ -4,6 +4,7 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <random>
 
 #include "common/literals.h"
@@ -112,6 +113,11 @@ bool KSystemControl::Init::ShouldIncreaseThreadResourceLimit() {
     return true;
 }
 
+size_t KSystemControl::Nx2RemoteMemorySize() {
+    static const size_t size = std::getenv("EDEN_NX2_APP_POOL_PROBE") != nullptr ? 512_MiB : 0;
+    return size;
+}
+
 std::size_t KSystemControl::Init::GetApplicationPoolSize() {
     // Get the base pool size.
     const size_t base_pool_size = []() -> size_t {
@@ -138,7 +144,18 @@ std::size_t KSystemControl::Init::GetApplicationPoolSize() {
     }();
 
     // Return (possibly) adjusted size.
-    return base_pool_size;
+    return base_pool_size + GetApplicationPoolGrowth();
+}
+
+std::size_t KSystemControl::Init::GetApplicationPoolGrowth() {
+    // EDEN_NX2_APP_POOL_PROBE=<MiB> grows the pool: The Duskbloods network test's CSMemory heap "M"
+    // asks for more than the 12 GB arrangement leaves (playDB-CNT issue 2).
+    const char* probe = std::getenv("EDEN_NX2_APP_POOL_PROBE");
+    if (probe == nullptr) {
+        return 0;
+    }
+    return static_cast<size_t>(std::strtoull(probe, nullptr, 10)) * 1_MiB +
+           KSystemControl::Nx2RemoteMemorySize();
 }
 
 size_t KSystemControl::Init::GetAppletPoolSize() {
