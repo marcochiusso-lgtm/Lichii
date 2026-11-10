@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <cstdlib>
+
+#include "common/logging.h"
 
 #include "video_core/renderer_vulkan/present/fsr3_frame_gen.h"
 #include "video_core/renderer_vulkan/present/util.h"
+#include "video_core/renderer_vulkan/vk_present_manager.h"
 #include "video_core/renderer_vulkan/vk_scheduler.h"
 #include "video_core/renderer_vulkan/vk_shader_util.h"
 #include "video_core/vulkan_common/vulkan_device.h"
@@ -157,6 +161,11 @@ struct InterpPushConstants {
     float render_h;
     float blend_factor;
     float flow_scale;
+    // Converts the sampled motion to texture coordinates.
+    float motion_scale_x;
+    float motion_scale_y;
+    // 1 when BackwardMotion holds the reverse flow, on the previous frame's pixels.
+    float has_backward;
 };
 
 Fsr3FrameGen::Fsr3FrameGen(const Device& device, MemoryAllocator& memory_allocator,
@@ -164,35 +173,97 @@ Fsr3FrameGen::Fsr3FrameGen(const Device& device, MemoryAllocator& memory_allocat
     : m_allocator{memory_allocator}, m_extent{extent},
       m_flow_extent{(std::max)(1u, extent.width / 2), (std::max)(1u, extent.height / 2)},
       m_format{format} {
+    // The device enables optical flow only when frame_gen_motion asks for it.
+    const bool try_nvof = device.HasOpticalFlow();
+    if (try_nvof && device.HasFrameGenCompute()) {
+        m_try_async = true;
+        if (device.GetFrameGenComputeFamily() != device.GetGraphicsFamily()) {
+            m_shared_families = {device.GetGraphicsFamily(), device.GetFrameGenComputeFamily()};
+        }
+    }
     CreateResources(device);
     CreateShaders(device);
     CreatePipelines(device);
     m_initialized = true;
+
+    if (try_nvof) {
+        try {
+            m_nvof = std::make_unique<NvOpticalFlow>(device, memory_allocator, extent);
+        } catch (const vk::Exception& exception) {
+            LOG_ERROR(Render_Vulkan, "Optical flow session failed: {}", exception.what());
+            m_nvof.reset();
+        }
+        if (m_nvof && !m_nvof->IsValid()) {
+            m_nvof.reset();
+        }
+        m_nearest_sampler = CreateNearestNeighborSampler(device);
+    }
+    if (m_nvof && m_try_async) {
+        CreateAsyncResources(device);
+        m_nvof->UseTimeline();
+    }
+    LOG_INFO(Render_Vulkan, "Frame generation motion: {}{}",
+             m_nvof ? "NVIDIA optical flow hardware" : "flow shader",
+             m_async ? ", generated on a separate queue" : "");
 }
 
-Fsr3FrameGen::~Fsr3FrameGen() = default;
+Fsr3FrameGen::~Fsr3FrameGen() {
+    if (m_async) {
+        void(m_device->GetFrameGenComputeQueue().WaitIdle());
+    }
+}
+
+void Fsr3FrameGen::CreateAsyncResources(const Device& device) {
+    m_device = &device;
+    constexpr u32 slots = MaxAsyncFrames;
+    m_async_pool = device.GetLogical().CreateCommandPool({
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .pNext = nullptr,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+        .queueFamilyIndex = device.GetFrameGenComputeFamily(),
+    });
+    m_async_cmdbufs = m_async_pool.Allocate(slots);
+    const std::array pool_sizes{
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * slots},
+        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, slots},
+    };
+    m_async_desc_pool = device.GetLogical().CreateDescriptorPool(VkDescriptorPoolCreateInfo{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = slots,
+        .poolSizeCount = static_cast<u32>(pool_sizes.size()),
+        .pPoolSizes = pool_sizes.data(),
+    });
+    std::vector<VkDescriptorSetLayout> layouts(slots, *m_interp_desc_layout);
+    m_async_sets = CreateWrappedDescriptorSets(m_async_desc_pool, layouts);
+    m_async = true;
+}
 
 void Fsr3FrameGen::CreateResources(const Device& device) {
     m_linear_sampler = CreateBilinearSampler(device);
 
-    m_history_image = CreateWrappedImage(m_allocator, m_extent, m_format);
+    // The previous and current frames, read on the frame generation compute queue when shared.
+    const bool shared = !m_shared_families.empty();
+    const auto create_frame_copy = [&] {
+        return m_allocator.CreateImage(VkImageCreateInfo{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = m_format,
+            .extent = {m_extent.width, m_extent.height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT,
+            .sharingMode = shared ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = shared ? static_cast<u32>(m_shared_families.size()) : 0U,
+            .pQueueFamilyIndices = shared ? m_shared_families.data() : nullptr,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        });
+    };
+    m_history_image = create_frame_copy();
     m_history_view = CreateWrappedImageView(device, m_history_image, m_format);
-
-    // Current-frame copy for interpolation shader
-    m_current_image = m_allocator.CreateImage(VkImageCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = m_format,
-        .extent = {m_extent.width, m_extent.height, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                 VK_IMAGE_USAGE_SAMPLED_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    });
+    m_current_image = create_frame_copy();
     m_current_view = CreateWrappedImageView(device, m_current_image, m_format);
 
     // Half-resolution motion vector image
@@ -261,6 +332,7 @@ void Fsr3FrameGen::CreatePipelines(const Device& device) {
         VkDescriptorSetLayoutBinding{1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
         VkDescriptorSetLayoutBinding{2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
         VkDescriptorSetLayoutBinding{3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        VkDescriptorSetLayoutBinding{4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
     };
 
     m_interp_desc_layout = device.GetLogical().CreateDescriptorSetLayout(VkDescriptorSetLayoutCreateInfo{
@@ -308,6 +380,9 @@ void Fsr3FrameGen::Process(const Device& device, Scheduler& scheduler, VkImage c
         });
         m_has_history = true;
         m_last_frame_count = frame_count;
+        if (m_nvof) {
+            void(m_nvof->Run(scheduler, current_frame));
+        }
         return;
     }
 
@@ -316,6 +391,30 @@ void Fsr3FrameGen::Process(const Device& device, Scheduler& scheduler, VkImage c
         return;
     }
     m_last_frame_count = frame_count;
+
+    if (m_nvof) {
+        if (m_async) {
+            // The last generation reads the copies overwritten below.
+            void(m_device->GetFrameGenComputeQueue().WaitIdle());
+        }
+        scheduler.Record([this, current_frame](vk::CommandBuffer cmdbuf) {
+            CopyImageToImage(cmdbuf, *m_current_image, *m_history_image, m_extent);
+            CopyImageToImage(cmdbuf, current_frame, *m_current_image, m_extent);
+        });
+        m_flow_wait = m_nvof->Run(scheduler, current_frame);
+        if (m_nvof->IsValid()) {
+            m_flow_valid = m_flow_wait != VK_NULL_HANDLE;
+            m_flow_copied = false;
+            return;
+        }
+        LOG_WARNING(Render_Vulkan, "Optical flow hardware unusable, using the flow shader");
+        // The flow shader generates on the graphics queue. The wait above already finished
+        // the last async generation.
+        m_async = false;
+        m_nvof.reset();
+        m_flow_valid = false;
+        return;
+    }
 
     // ΓöÇΓöÇ Descriptor caching ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     if (!m_flow_descriptors_initialized) {
@@ -388,15 +487,27 @@ void Fsr3FrameGen::Generate(const Device& device, Scheduler& scheduler, VkImage 
     if (!m_interp_pool) {
         m_interp_pool.emplace(device, scheduler);
         m_interp_allocator = m_interp_pool->Allocator(device, scheduler, *m_interp_desc_layout,
-                                                      DescriptorBankInfo{.textures = 3, .images = 1});
+                                                      DescriptorBankInfo{.textures = 4, .images = 1});
+    }
+    if (m_nvof && !m_flow_copied) {
+        // In the submission that waits for the optical flow (the first after Process).
+        m_flow_copied = true;
+        // The slot is taken now: the next Run can change it before the worker records this.
+        scheduler.Record([nvof = m_nvof.get(), slot = m_nvof->LastSlot()](vk::CommandBuffer cmdbuf) {
+            nvof->RecordFlowCopy(cmdbuf, slot);
+        });
     }
     const VkDescriptorSet set = m_interp_allocator.Commit();
     std::vector<VkDescriptorImageInfo> image_infos;
-    image_infos.reserve(4);
+    image_infos.reserve(5);
     std::vector<VkWriteDescriptorSet> updates{
         CreateWriteDescriptorSet(image_infos, *m_linear_sampler, *m_current_view, set, 0),
         CreateWriteDescriptorSet(image_infos, *m_linear_sampler, *m_history_view, set, 1),
-        CreateWriteDescriptorSet(image_infos, *m_linear_sampler, *m_motion_view, set, 2),
+        m_nvof ? CreateWriteDescriptorSet(image_infos, *m_nearest_sampler, m_nvof->FlowView(), set, 2)
+               : CreateWriteDescriptorSet(image_infos, *m_linear_sampler, *m_motion_view, set, 2),
+        m_nvof ? CreateWriteDescriptorSet(image_infos, *m_nearest_sampler,
+                                          m_nvof->BackwardFlowView(), set, 4)
+               : CreateWriteDescriptorSet(image_infos, *m_linear_sampler, *m_motion_view, set, 4),
     };
 
     const VkDescriptorImageInfo dest_info{
@@ -423,6 +534,14 @@ void Fsr3FrameGen::Generate(const Device& device, Scheduler& scheduler, VkImage 
         .render_h = static_cast<float>(out_h),
         .blend_factor = blend_factor,
         .flow_scale = flow_scale,
+        // The hardware flow is in pixels, the shader's in flow texels.
+        .motion_scale_x = m_nvof ? NvOpticalFlow::FlowToPixels *
+                                       m_nvof->InputScaleX() / static_cast<float>(m_extent.width)
+                                 : 1.0f / static_cast<float>(m_flow_extent.width),
+        .motion_scale_y = m_nvof ? NvOpticalFlow::FlowToPixels *
+                                       m_nvof->InputScaleY() / static_cast<float>(m_extent.height)
+                                 : 1.0f / static_cast<float>(m_flow_extent.height),
+        .has_backward = m_nvof && m_nvof->HasBackwardFlow() ? 1.0f : 0.0f,
     };
 
     scheduler.Record([this, constants, out_w, out_h, set, destination](vk::CommandBuffer cmdbuf) {
@@ -434,5 +553,107 @@ void Fsr3FrameGen::Generate(const Device& device, Scheduler& scheduler, VkImage 
         cmdbuf.Dispatch((out_w + 15) / 16, (out_h + 15) / 16, 1);
     });
 }
+
+void Fsr3FrameGen::GenerateAsync(const Device& device, Frame& destination, float blend_factor,
+                                 float flow_scale) {
+    if (!m_has_history || !m_flow_valid) {
+        return;
+    }
+    // The frame (and so this slot) was acquired after its last presentation, which waited for
+    // the last generation into it.
+    const u32 slot = destination.index % MaxAsyncFrames;
+    const VkDescriptorSet set = m_async_sets[slot];
+    std::vector<VkDescriptorImageInfo> image_infos;
+    image_infos.reserve(5);
+    const VkDescriptorImageInfo destination_info{
+        .sampler = VK_NULL_HANDLE,
+        .imageView = *destination.storage_view,
+        .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+    };
+    const std::array updates{
+        CreateWriteDescriptorSet(image_infos, *m_linear_sampler, *m_current_view, set, 0),
+        CreateWriteDescriptorSet(image_infos, *m_linear_sampler, *m_history_view, set, 1),
+        CreateWriteDescriptorSet(image_infos, *m_nearest_sampler, m_nvof->FlowView(), set, 2),
+        VkWriteDescriptorSet{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext = nullptr,
+            .dstSet = set,
+            .dstBinding = 3,
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            .pImageInfo = &destination_info,
+            .pBufferInfo = nullptr,
+            .pTexelBufferView = nullptr,
+        },
+        CreateWriteDescriptorSet(image_infos, *m_nearest_sampler, m_nvof->BackwardFlowView(), set,
+                                 4),
+    };
+    device.GetLogical().UpdateDescriptorSets(updates, {});
+
+    const InterpPushConstants constants{
+        .inv_render_w = 1.0f / static_cast<float>(m_extent.width),
+        .inv_render_h = 1.0f / static_cast<float>(m_extent.height),
+        .render_w = static_cast<float>(m_extent.width),
+        .render_h = static_cast<float>(m_extent.height),
+        .blend_factor = blend_factor,
+        .flow_scale = flow_scale,
+        .motion_scale_x = NvOpticalFlow::FlowToPixels *
+                          m_nvof->InputScaleX() / static_cast<float>(m_extent.width),
+        .motion_scale_y = NvOpticalFlow::FlowToPixels *
+                          m_nvof->InputScaleY() / static_cast<float>(m_extent.height),
+        .has_backward = m_nvof->HasBackwardFlow() ? 1.0f : 0.0f,
+    };
+
+    const VkCommandBuffer raw = m_async_cmdbufs[slot];
+    vk::CommandBuffer cmdbuf{raw, device.GetDispatchLoader()};
+    cmdbuf.Begin({
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext = nullptr,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        .pInheritanceInfo = nullptr,
+    });
+    if (!m_flow_copied) {
+        m_flow_copied = true;
+        m_nvof->RecordFlowCopy(cmdbuf, m_nvof->LastSlot());
+    }
+    DiscardForComputeWrite(cmdbuf, *destination.image);
+    cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *m_interp_pipeline);
+    cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *m_interp_pipe_layout, 0, set, {});
+    cmdbuf.PushConstants(*m_interp_pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, constants);
+    cmdbuf.Dispatch((m_extent.width + 15) / 16, (m_extent.height + 15) / 16, 1);
+    cmdbuf.End();
+
+    // Waits for the optical flow (which waited for the frame copies) on its timeline.
+    const VkSemaphore wait = m_flow_wait;
+    const u64 wait_value = m_nvof->LastFlowValue();
+    const u64 signal_value = 0;
+    const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                            VK_PIPELINE_STAGE_TRANSFER_BIT;
+    const VkSemaphore signal = *destination.render_ready;
+    const VkTimelineSemaphoreSubmitInfo timeline_info{
+        .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .pNext = nullptr,
+        .waitSemaphoreValueCount = 1,
+        .pWaitSemaphoreValues = &wait_value,
+        .signalSemaphoreValueCount = 1,
+        .pSignalSemaphoreValues = &signal_value,
+    };
+    const VkSubmitInfo submit{
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext = &timeline_info,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &wait,
+        .pWaitDstStageMask = &wait_stage,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &raw,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &signal,
+    };
+    destination.generated_ready.Reset();
+    vk::Check(device.GetFrameGenComputeQueue().Submit(submit, *destination.generated_ready));
+    destination.generated_async = true;
+}
+
 
 } // namespace Vulkan

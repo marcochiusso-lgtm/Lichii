@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -232,8 +234,13 @@ void FrameGen::Process(const Device& device, Frame* frame, VkFormat format,
 
     const VkExtent2D extent{.width = frame->width, .height = frame->height};
     const f32 flow_scale = ConfiguredFlowScale(peak_guest_extent, extent);
-    if ((!chain && !fsr3_chain) || built_extent.width != extent.width || built_extent.height != extent.height ||
-        built_format != format || built_flow_scale != flow_scale) {
+    // The type can change from the status bar while a game runs. Only LSFG uses the flow scale;
+    // rebuilding the built-in chain for it would drop its history.
+    const bool wants_fsr3 = Settings::values.frame_gen_type.GetValue() == Settings::FrameGenType::Fsr3;
+    const bool wrong_chain = wants_fsr3 ? !fsr3_chain : !chain;
+    const bool flow_scale_changed = chain && built_flow_scale != flow_scale;
+    if (wrong_chain || built_extent.width != extent.width || built_extent.height != extent.height ||
+        built_format != format || flow_scale_changed) {
         Rebuild(device, extent, format, flow_scale);
     }
 
@@ -292,8 +299,12 @@ void FrameGen::GenerateInto(const Device& device, Frame* destination, size_t gen
         const f32 flow_scale = ConfiguredFlowScale(peak_guest_extent, built_extent);
 
         scheduler.RequestOutsideRenderPassOperationContext();
-        fsr3_chain->Generate(device, scheduler, *destination->image, *destination->storage_view,
-                             blend, flow_scale);
+        if (fsr3_chain->IsAsync()) {
+            fsr3_chain->GenerateAsync(device, *destination, blend, flow_scale);
+        } else {
+            fsr3_chain->Generate(device, scheduler, *destination->image,
+                                 *destination->storage_view, blend, flow_scale);
+        }
     } else if (chain) {
         chain->SetTarget(device, last_generations, generation, destination->index,
                          *destination->storage_view);
@@ -327,6 +338,56 @@ void FrameGen::Rebuild(const Device& device, VkExtent2D extent, VkFormat format,
     frame_count = 0;
     warm_streak = 0;
     generated = false;
+}
+
+namespace {
+const auto program_start = std::chrono::steady_clock::now();
+}
+
+// EDEN_NX2_FG_DUMP=<directory>: EDEN_NX2_FG_DUMP_AFTER seconds after start (default 50), every
+// EDEN_NX2_FG_DUMP_EVERY generated frames (default 30), saves the previous, generated and current
+// frames of up to 8 interpolations as PPM files.
+void FrameGen::DumpInterpolation(Frame* generated_frame) {
+    const VkImage generated_image = *generated_frame->image;
+    const VkExtent2D extent = built_extent;
+    static const char* const directory = std::getenv("EDEN_NX2_FG_DUMP");
+    if (!directory || interpolation_dumps >= 8 || !fsr3_chain) {
+        return;
+    }
+    static const auto after = std::chrono::seconds(
+        std::getenv("EDEN_NX2_FG_DUMP_AFTER") ? std::atoi(std::getenv("EDEN_NX2_FG_DUMP_AFTER")) : 50);
+    static const u32 every = std::getenv("EDEN_NX2_FG_DUMP_EVERY")
+                                 ? static_cast<u32>(std::atoi(std::getenv("EDEN_NX2_FG_DUMP_EVERY")))
+                                 : 30U;
+    static u32 seen{};
+    if (std::chrono::steady_clock::now() - program_start < after || seen++ % (std::max)(every, 1U) != 0) {
+        return;
+    }
+    const u32 dump = interpolation_dumps++;
+    if (generated_frame->generated_async) {
+        void(generated_frame->generated_ready.Wait());
+    }
+    LOG_INFO(Render_Vulkan, "Frame gen dump {} to {} ({}x{})", dump, directory, extent.width,
+             extent.height);
+    const VkDeviceSize size = VkDeviceSize{extent.width} * extent.height * COLOR_CHANNELS;
+    const std::array<std::pair<const char*, VkImage>, 3> images{{
+        {"a_previous", fsr3_chain->PreviousImage()},
+        {"b_generated", generated_image},
+        {"c_current", fsr3_chain->CurrentImage()},
+    }};
+    for (const auto& [name, image] : images) {
+        vk::Buffer buffer = CreateWrappedBuffer(memory_allocator, size, MemoryUsage::Download);
+        scheduler.RequestOutsideRenderPassOperationContext();
+        scheduler.Record([image, dst = *buffer, extent](vk::CommandBuffer cmdbuf) {
+            DownloadColorImage(cmdbuf, image, dst,
+                               VkExtent3D{.width = extent.width, .height = extent.height, .depth = 1});
+        });
+        scheduler.Finish();
+        buffer.Invalidate();
+        WriteColorPpm(std::filesystem::path{directory} /
+                          ("fg" + std::to_string(dump) + "_" + name + ".ppm"),
+                      extent, buffer.Mapped(), IsBlueFirst(built_format));
+    }
 }
 
 void FrameGen::DumpDebugImages(u64 count) {

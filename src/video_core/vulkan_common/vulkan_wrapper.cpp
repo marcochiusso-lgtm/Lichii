@@ -108,6 +108,10 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdCopyImageToBuffer);
     X(vkCmdCopyQueryPoolResults);
     X(vkCmdDispatch);
+    X(vkCmdOpticalFlowExecuteNV);
+    X(vkCreateOpticalFlowSessionNV);
+    X(vkDestroyOpticalFlowSessionNV);
+    X(vkBindOpticalFlowSessionImageNV);
     X(vkCmdDispatchIndirect);
     X(vkCmdDraw);
     X(vkCmdDrawIndexed);
@@ -212,6 +216,7 @@ void Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkDestroyShaderModule);
     X(vkDestroySwapchainKHR);
     X(vkDeviceWaitIdle);
+    X(vkQueueWaitIdle);
     X(vkEndCommandBuffer);
     X(vkFreeCommandBuffers);
     X(vkFreeDescriptorSets);
@@ -323,6 +328,7 @@ bool Load(VkInstance instance, InstanceDispatch& dld) noexcept {
     X(vkDestroySurfaceKHR);
     X(vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR);
     X(vkGetPhysicalDeviceFeatures2);
+    X(vkGetPhysicalDeviceOpticalFlowImageFormatsNV);
     X(vkGetPhysicalDeviceFormatProperties2);
     X(vkGetPhysicalDeviceProperties2);
     X(vkGetPhysicalDeviceSurfaceCapabilitiesKHR);

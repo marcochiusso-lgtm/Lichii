@@ -526,6 +526,25 @@ struct Values {
                                                         false,
                                                         &frame_gen};
 
+    // Auto: motion from NVIDIA's optical flow hardware when the GPU has it, else the flow shader.
+    SwitchableSetting<FrameGenMotion> frame_gen_motion{linkage,
+                                                       FrameGenMotion::Auto,
+                                                       "frame_gen_motion",
+                                                       Category::Renderer,
+                                                       Specialization::Default,
+                                                       true,
+                                                       false,
+                                                       &frame_gen};
+
+    SwitchableSetting<FrameGenFlowQuality> frame_gen_flow_quality{linkage,
+                                                                  FrameGenFlowQuality::Medium,
+                                                                  "frame_gen_flow_quality",
+                                                                  Category::Renderer,
+                                                                  Specialization::Default,
+                                                                  true,
+                                                                  false,
+                                                                  &frame_gen};
+
     SwitchableSetting<bool> frame_gen_dump_flow{linkage, false, "frame_gen_dump_flow",
                                                 Category::Renderer};
 

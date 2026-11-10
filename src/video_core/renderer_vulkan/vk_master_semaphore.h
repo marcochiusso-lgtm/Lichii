@@ -33,6 +33,11 @@ public:
         return current_tick.load(std::memory_order_acquire);
     }
 
+    /// The timeline semaphore the ticks signal, or a null handle without timeline semaphores.
+    [[nodiscard]] VkSemaphore TimelineHandle() const noexcept {
+        return *semaphore;
+    }
+
     /// Returns the last known GPU tick.
     [[nodiscard]] u64 KnownGpuTick() const noexcept {
         return gpu_tick.load(std::memory_order_acquire);

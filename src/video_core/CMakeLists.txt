@@ -379,6 +379,8 @@ if (ENABLE_LSFG)
         renderer_vulkan/present/frame_gen.h
         renderer_vulkan/present/fsr3_frame_gen.cpp
         renderer_vulkan/present/fsr3_frame_gen.h
+        renderer_vulkan/present/nv_optical_flow.cpp
+        renderer_vulkan/present/nv_optical_flow.h
         renderer_vulkan/present/frame_gen_pacer.cpp
         renderer_vulkan/present/frame_gen_pacer.h
         renderer_vulkan/present/lsfg_alpha.cpp

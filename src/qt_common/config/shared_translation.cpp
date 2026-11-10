@@ -257,6 +257,13 @@ std::unique_ptr<TranslationMap> InitializeTranslations(QObject* parent) {
     INSERT(Settings, frame_gen_flow_scale, tr("Flow Scale"), QString());
     INSERT(Settings, frame_gen_queue_target, tr("Queue Target"), QString());
     INSERT(Settings, frame_gen_dump_flow, tr("Dump Optical Flow"), QString());
+    INSERT(Settings, frame_gen_motion, tr("Frame Generation Motion"),
+           tr("Where the built-in frame generation gets its motion from. Auto uses NVIDIA's optical "
+              "flow hardware (RTX 20 series and newer) when available, and the flow shader "
+              "otherwise."));
+    INSERT(Settings, frame_gen_flow_quality, tr("Optical Flow Quality"),
+           tr("Quality of the optical flow hardware's motion estimate. Higher quality costs more "
+              "GPU time."));
 
     // Renderer (Advanced Graphics)
     INSERT(Settings, use_asynchronous_gpu_emulation, QString(), QString());
@@ -576,6 +583,17 @@ std::unique_ptr<ComboboxTranslationMap> ComboboxEnumeration(QObject* parent) {
                           {
                               PAIR(FrameGenType, Lsfg, tr("Lossless Scaling (LSFG)")),
                               PAIR(FrameGenType, Fsr3, tr("Optical Flow Interpolation (built-in)")),
+                          }});
+    translations->insert({Settings::EnumMetadata<Settings::FrameGenMotion>::Index(),
+                          {
+                              PAIR(FrameGenMotion, Auto, tr("Auto (optical flow hardware)")),
+                              PAIR(FrameGenMotion, Shader, tr("Flow shader")),
+                          }});
+    translations->insert({Settings::EnumMetadata<Settings::FrameGenFlowQuality>::Index(),
+                          {
+                              PAIR(FrameGenFlowQuality, Fast, tr("Fast")),
+                              PAIR(FrameGenFlowQuality, Medium, tr("Medium")),
+                              PAIR(FrameGenFlowQuality, Best, tr("Best")),
                           }});
     translations->insert({Settings::EnumMetadata<Settings::ScalingFilter>::Index(),
                           {

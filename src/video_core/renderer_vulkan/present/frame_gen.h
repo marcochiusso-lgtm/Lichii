@@ -31,6 +31,12 @@ public:
 
     [[nodiscard]] size_t GeneratedFrameCount() const;
 
+    /// The semaphore the next graphics submission must wait on (hardware optical flow), or a
+    /// null handle.
+    [[nodiscard]] VkSemaphore TakeFlowWait() {
+        return fsr3_chain ? fsr3_chain->TakeFlowWait() : VK_NULL_HANDLE;
+    }
+
     /// The measured time between real frames in seconds, or 0 while it is unknown.
     [[nodiscard]] f32 FrameInterval() const {
         return pacer.SmoothedInterval();
@@ -42,6 +48,8 @@ public:
         return {.state = state.load(std::memory_order_relaxed),
                 .generated_frames = generated_frames.load(std::memory_order_relaxed)};
     }
+    /// EDEN_NX2_FG_DUMP: saves a generated frame and its two sources, after its submission.
+    void DumpInterpolation(Frame* generated);
 
 private:
     void Rebuild(const Device& device, VkExtent2D extent, VkFormat format, f32 flow_scale);
@@ -68,6 +76,7 @@ private:
     bool dumped{};
     std::atomic<VideoCore::FrameGenState> state{VideoCore::FrameGenState::Pending};
     std::atomic<u64> generated_frames{};
+    u32 interpolation_dumps{};
 };
 
 } // namespace Vulkan

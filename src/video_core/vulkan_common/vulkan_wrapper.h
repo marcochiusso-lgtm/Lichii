@@ -181,6 +181,7 @@ struct InstanceDispatch {
     PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR
         vkGetPhysicalDeviceCooperativeMatrixPropertiesKHR{};
     PFN_vkGetPhysicalDeviceFeatures2 vkGetPhysicalDeviceFeatures2{};
+    PFN_vkGetPhysicalDeviceOpticalFlowImageFormatsNV vkGetPhysicalDeviceOpticalFlowImageFormatsNV{};
     PFN_vkGetPhysicalDeviceFormatProperties vkGetPhysicalDeviceFormatProperties{};
     PFN_vkGetPhysicalDeviceFormatProperties2 vkGetPhysicalDeviceFormatProperties2{};
     PFN_vkGetPhysicalDeviceMemoryProperties vkGetPhysicalDeviceMemoryProperties{};
@@ -226,6 +227,10 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkCmdCopyImageToBuffer vkCmdCopyImageToBuffer{};
     PFN_vkCmdCopyQueryPoolResults vkCmdCopyQueryPoolResults{};
     PFN_vkCmdDispatch vkCmdDispatch{};
+    PFN_vkCmdOpticalFlowExecuteNV vkCmdOpticalFlowExecuteNV{};
+    PFN_vkCreateOpticalFlowSessionNV vkCreateOpticalFlowSessionNV{};
+    PFN_vkDestroyOpticalFlowSessionNV vkDestroyOpticalFlowSessionNV{};
+    PFN_vkBindOpticalFlowSessionImageNV vkBindOpticalFlowSessionImageNV{};
     PFN_vkCmdDispatchIndirect vkCmdDispatchIndirect{};
     PFN_vkCmdDraw vkCmdDraw{};
     PFN_vkCmdDrawIndexed vkCmdDrawIndexed{};
@@ -330,6 +335,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkDestroyShaderModule vkDestroyShaderModule{};
     PFN_vkDestroySwapchainKHR vkDestroySwapchainKHR{};
     PFN_vkDeviceWaitIdle vkDeviceWaitIdle{};
+    PFN_vkQueueWaitIdle vkQueueWaitIdle{};
     PFN_vkEndCommandBuffer vkEndCommandBuffer{};
     PFN_vkFreeCommandBuffers vkFreeCommandBuffers{};
     PFN_vkFreeDescriptorSets vkFreeDescriptorSets{};
@@ -887,6 +893,10 @@ public:
         return dld->vkQueueBindSparse(queue, bind_infos.size(), bind_infos.data(), fence);
     }
 
+    VkResult WaitIdle() const noexcept {
+        return dld->vkQueueWaitIdle(queue);
+    }
+
     VkResult Present(const VkPresentInfoKHR& present_info) const noexcept {
         return dld->vkQueuePresentKHR(queue, &present_info);
     }
@@ -1075,6 +1085,12 @@ public:
                                        DeviceDispatch& dispatch);
 
     [[nodiscard]] Queue GetQueue(u32 family_index) const noexcept;
+
+    [[nodiscard]] Queue GetQueue(u32 family_index, u32 queue_index) const noexcept {
+        VkQueue queue;
+        dld->vkGetDeviceQueue(handle, family_index, queue_index, &queue);
+        return Queue(queue, *dld);
+    }
 
     [[nodiscard]] BufferView CreateBufferView(const VkBufferViewCreateInfo& ci) const;
 

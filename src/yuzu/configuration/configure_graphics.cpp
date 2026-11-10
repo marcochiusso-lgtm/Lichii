@@ -222,6 +222,8 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
     std::map<u32, QWidget*> hold_graphics;
     std::vector<QWidget*> hold_api;
     QCheckBox* frame_gen_checkbox = nullptr;
+    QComboBox* frame_gen_type_combobox = nullptr;
+    QComboBox* frame_gen_motion_combobox = nullptr;
 
     for (const auto setting : Settings::values.linkage.by_category[Settings::Category::Renderer]) {
 #ifndef HAS_RESHADE
@@ -371,6 +373,12 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
         } else if (setting->Id() == Settings::values.frame_gen.Id()) {
             frame_gen_checkbox = widget->checkbox;
             hold_graphics.emplace(setting->Id(), widget);
+        } else if (setting->Id() == Settings::values.frame_gen_type.Id()) {
+            frame_gen_type_combobox = widget->combobox;
+            hold_graphics.emplace(setting->Id(), widget);
+        } else if (setting->Id() == Settings::values.frame_gen_motion.Id()) {
+            frame_gen_motion_combobox = widget->combobox;
+            hold_graphics.emplace(setting->Id(), widget);
         } else {
             hold_graphics.emplace(setting->Id(), widget);
         }
@@ -380,17 +388,46 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
         graphics_layout.addWidget(widget);
     }
 
-    // Hide rather than disable, a disabled widget would read as using the global value
+    // Hide rather than disable, a disabled widget would read as using the global value. Each
+    // frame generation setting shows only while it applies: the flow scale to LSFG, the motion
+    // source to the built-in type, and the optical flow quality to its hardware.
     if (frame_gen_checkbox != nullptr) {
-        for (const u32 id : {Settings::values.frame_gen_type.Id(),
-                             Settings::values.frame_gen_multiplier.Id(),
-                             Settings::values.frame_gen_target_rate.Id(),
-                             Settings::values.frame_gen_flow_scale_auto.Id(),
-                             Settings::values.frame_gen_flow_scale.Id(),
-                             Settings::values.frame_gen_queue_target.Id()}) {
+        const auto selected = [](QComboBox* combobox, auto value) {
+            return combobox == nullptr || combobox->currentData().toUInt() == static_cast<u32>(value);
+        };
+        QCheckBox* const checkbox = frame_gen_checkbox;
+        QComboBox* const type = frame_gen_type_combobox;
+        QComboBox* const motion = frame_gen_motion_combobox;
+        std::vector<std::pair<QWidget*, std::function<bool()>>> dependents;
+        const auto add = [&](u32 id, std::function<bool()> applies) {
             if (const auto it = hold_graphics.find(id); it != hold_graphics.end()) {
-                it->second->setVisible(frame_gen_checkbox->isChecked());
-                connect(frame_gen_checkbox, &QCheckBox::toggled, it->second, &QWidget::setVisible);
+                dependents.emplace_back(it->second, std::move(applies));
+            }
+        };
+        const auto always = [] { return true; };
+        const auto lsfg = [=] { return selected(type, Settings::FrameGenType::Lsfg); };
+        const auto built_in = [=] { return selected(type, Settings::FrameGenType::Fsr3); };
+        add(Settings::values.frame_gen_type.Id(), always);
+        add(Settings::values.frame_gen_multiplier.Id(), always);
+        add(Settings::values.frame_gen_target_rate.Id(), always);
+        add(Settings::values.frame_gen_flow_scale_auto.Id(), lsfg);
+        add(Settings::values.frame_gen_flow_scale.Id(), lsfg);
+        add(Settings::values.frame_gen_queue_target.Id(), always);
+        add(Settings::values.frame_gen_motion.Id(), built_in);
+        add(Settings::values.frame_gen_flow_quality.Id(), [=] {
+            return built_in() && selected(motion, Settings::FrameGenMotion::Auto);
+        });
+        const auto update = [checkbox, dependents] {
+            for (const auto& [widget, applies] : dependents) {
+                widget->setVisible(checkbox->isChecked() && applies());
+            }
+        };
+        update();
+        connect(checkbox, &QCheckBox::toggled, this, update);
+        for (QComboBox* const combobox : {type, motion}) {
+            if (combobox != nullptr) {
+                connect(combobox, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+                        update);
             }
         }
     }

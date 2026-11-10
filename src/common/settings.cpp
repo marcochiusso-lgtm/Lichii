@@ -62,6 +62,8 @@ SWITCHABLE(Region, true);
 SWITCHABLE(RendererBackend, true);
 SWITCHABLE(ScalingFilter, false);
 SWITCHABLE(FrameGenType, false);
+SWITCHABLE(FrameGenMotion, false);
+SWITCHABLE(FrameGenFlowQuality, false);
 SWITCHABLE(SpirvOptimizeMode, true);
 SWITCHABLE(TimeZone, true);
 SETTING(VSyncMode, true);

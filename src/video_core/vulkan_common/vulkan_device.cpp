@@ -821,10 +821,91 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     if (host_float16_supported || (device_float16 && WantsAmdFsr4(driver_id))) {
         features.shader_float16_int8.shaderFloat16 = VK_TRUE;
     }
-    logical = vk::Device::Create(physical, queue_cis, ExtensionListForVulkan(loaded_extensions), first_next, dld);
+    // VK_NV_optical_flow (frame generation): its own queue family, enabled only when it exists.
+    auto all_queue_cis = queue_cis;
+    VkPhysicalDeviceOpticalFlowFeaturesNV optical_flow_features{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPTICAL_FLOW_FEATURES_NV,
+        .pNext = nullptr,
+        .opticalFlow = VK_FALSE,
+    };
+    static constexpr float OPTICAL_FLOW_PRIORITY = 1.0f;
+    // Not tied to frame_gen: the status bar can turn frame generation on while a game runs.
+    if (supported_extensions.contains(VK_NV_OPTICAL_FLOW_EXTENSION_NAME) &&
+        Settings::values.frame_gen_motion.GetValue() == Settings::FrameGenMotion::Auto) {
+        VkPhysicalDeviceFeatures2 query{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+            .pNext = &optical_flow_features,
+            .features = {},
+        };
+        physical.GetFeatures2(query);
+        const auto families = physical.GetQueueFamilyProperties();
+        for (u32 family = 0; family < families.size(); ++family) {
+            if ((families[family].queueFlags & VK_QUEUE_OPTICAL_FLOW_BIT_NV) != 0 &&
+                family != graphics_family && family != present_family) {
+                optical_flow_family = family;
+                break;
+            }
+        }
+        if (optical_flow_features.opticalFlow && optical_flow_family != ~0U) {
+            optical_flow_properties = {
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPTICAL_FLOW_PROPERTIES_NV,
+            };
+            VkPhysicalDeviceProperties2 flow_properties2{
+                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                .pNext = &optical_flow_properties,
+                .properties = {},
+            };
+            physical.GetProperties2(flow_properties2);
+            loaded_extensions.insert(VK_NV_OPTICAL_FLOW_EXTENSION_NAME);
+            optical_flow_features.pNext = const_cast<void*>(first_next);
+            first_next = &optical_flow_features;
+            all_queue_cis.push_back(VkDeviceQueueCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .queueFamilyIndex = optical_flow_family,
+                .queueCount = 1,
+                .pQueuePriorities = &OPTICAL_FLOW_PRIORITY,
+            });
+            // Generated frames are built on a second queue of the graphics family, so the
+            // graphics queue never waits for the optical flow. Submissions on NVIDIA's
+            // compute-only family lost the device; without a second queue, frames are generated
+            // on the graphics queue.
+            static constexpr std::array<float, 2> GRAPHICS_PRIORITIES{1.0f, 1.0f};
+            if (families[graphics_family].queueCount >= 2) {
+                for (VkDeviceQueueCreateInfo& queue_ci : all_queue_cis) {
+                    if (queue_ci.queueFamilyIndex == graphics_family) {
+                        queue_ci.queueCount = 2;
+                        queue_ci.pQueuePriorities = GRAPHICS_PRIORITIES.data();
+                        frame_gen_compute_family = graphics_family;
+                        frame_gen_queue_index = 1;
+                    }
+                }
+            }
+            LOG_INFO(Render_Vulkan,
+                     "Optical flow: queue family {}, grids {:#x}, cost {}, both directions {}, "
+                     "{}x{} to {}x{}",
+                     optical_flow_family, optical_flow_properties.supportedOutputGridSizes,
+                     optical_flow_properties.costSupported,
+                     optical_flow_properties.bidirectionalFlowSupported,
+                     optical_flow_properties.minWidth, optical_flow_properties.minHeight,
+                     optical_flow_properties.maxWidth, optical_flow_properties.maxHeight);
+        } else {
+            optical_flow_family = ~0U;
+        }
+    }
+
+    logical = vk::Device::Create(physical, all_queue_cis, ExtensionListForVulkan(loaded_extensions), first_next, dld);
 
     graphics_queue = logical.GetQueue(graphics_family);
     present_queue = logical.GetQueue(present_family);
+    if (optical_flow_family != ~0U) {
+        optical_flow_queue = logical.GetQueue(optical_flow_family);
+    }
+    if (frame_gen_compute_family != ~0U) {
+        frame_gen_compute_queue =
+            logical.GetQueue(frame_gen_compute_family, frame_gen_queue_index);
+    }
 
 #ifdef EGLANTINE_STREAMLINE
     if (streamline_extensions) {

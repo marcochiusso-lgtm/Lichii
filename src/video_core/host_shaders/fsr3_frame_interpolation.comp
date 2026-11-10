@@ -6,12 +6,16 @@ layout(binding = 0) uniform sampler2D CurrentFrame;
 layout(binding = 1) uniform sampler2D PreviousFrame;
 layout(binding = 2) uniform sampler2D MotionVectors;
 layout(binding = 3, rgba8) uniform writeonly image2D OutGeneratedFrame;
+// The reverse flow (previous frame to current, on the previous frame's pixels) when has_backward.
+layout(binding = 4) uniform sampler2D BackwardMotion;
 
 layout(push_constant) uniform PushConstants {
     vec2 inv_render_size;
     vec2 render_size;
     float blend_factor; // timestamp between 0.0 and 1.0
     float flow_scale;
+    vec2 motion_scale; // sampled motion to texture coordinates
+    float has_backward;
 };
 
 // ΓöÇΓöÇ Optimized 3├ù3 motion vector median using textureGather ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
@@ -70,6 +74,49 @@ vec2 sampleMotionMedian(vec2 uv) {
     return vec2(xlo[4], ylo[4]);
 }
 
+float frameChange(vec2 uv) {
+    vec3 difference = abs(texture(PreviousFrame, uv).rgb - texture(CurrentFrame, uv).rgb);
+    return dot(difference, vec3(0.333));
+}
+
+float staticWeight(vec2 uv) {
+    return 1.0 - smoothstep(0.01, 0.03, frameChange(uv));
+}
+
+// The current-to-previous motion of the previous frame's content at `uv`.
+vec2 previousFrameMotion(vec2 uv) {
+    return has_backward > 0.5 ? -texture(BackwardMotion, uv).xy * motion_scale
+                              : texture(MotionVectors, uv).xy * motion_scale;
+}
+
+// 1 where `there` (the motion of what a sample lands on) matches `motion` (both in texture
+// coordinates), falling to 0 beyond a few pixels of difference.
+float motionConsistency(vec2 there, vec2 motion) {
+    float difference = length((there - motion) * render_size);
+    // Flow is noisier for larger motions.
+    float tolerance = 1.0 + 0.04 * length(motion * render_size);
+    return 1.0 - smoothstep(tolerance, 3.0 * tolerance, difference);
+}
+
+// How badly the two frames disagree around `uv` if it moved by `motion` between them.
+float matchError(vec2 uv, vec2 motion) {
+    vec2 previous_uv = uv + motion * blend_factor;
+    vec2 current_uv = uv - motion * (1.0 - blend_factor);
+    const vec2 offsets[5] = vec2[](vec2(0.0), vec2(-2.0, 0.0), vec2(2.0, 0.0), vec2(0.0, -2.0),
+                                   vec2(0.0, 2.0));
+    float error = 0.0;
+    for (int i = 0; i < 5; ++i) {
+        vec2 offset = offsets[i] * inv_render_size;
+        vec3 difference = abs(texture(PreviousFrame, previous_uv + offset).rgb -
+                              texture(CurrentFrame, current_uv + offset).rgb);
+        error += dot(difference, vec3(0.333));
+    }
+    // Samples from outside the frame only repeat its edge.
+    bool outside = any(notEqual(previous_uv, clamp(previous_uv, 0.0, 1.0))) ||
+                   any(notEqual(current_uv, clamp(current_uv, 0.0, 1.0)));
+    return error + (outside ? 0.5 : 0.0);
+}
+
 void main() {
     ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
     if (pixel_coord.x >= int(render_size.x) || pixel_coord.y >= int(render_size.y)) {
@@ -79,11 +126,40 @@ void main() {
     vec2 uv = (vec2(pixel_coord) + 0.5) * inv_render_size;
 
     // Median-filtered motion vector (reduces outlier jitter)
-    vec2 motion = sampleMotionMedian(uv) / vec2(textureSize(MotionVectors, 0));
+    // Candidate motions: the median and the raw vectors here and two flow cells away. At an
+    // object's edge the median mixes its motion with the background's (a halo around a figure the
+    // camera follows); the candidate under which both frames agree belongs to this pixel.
+    vec2 motion_texel = 1.0 / vec2(textureSize(MotionVectors, 0));
+    // With the reverse flow, the previous frame's motions here are candidates too: where the
+    // background appears from behind something, only that frame has it.
+    vec2 candidates[9] = vec2[](
+        sampleMotionMedian(uv) * motion_scale, texture(MotionVectors, uv).xy * motion_scale,
+        texture(MotionVectors, uv + vec2(-2.0, 0.0) * motion_texel).xy * motion_scale,
+        texture(MotionVectors, uv + vec2(2.0, 0.0) * motion_texel).xy * motion_scale,
+        texture(MotionVectors, uv + vec2(0.0, -2.0) * motion_texel).xy * motion_scale,
+        texture(MotionVectors, uv + vec2(0.0, 2.0) * motion_texel).xy * motion_scale,
+        previousFrameMotion(uv),
+        previousFrameMotion(uv + vec2(-2.0, 0.0) * motion_texel),
+        previousFrameMotion(uv + vec2(2.0, 0.0) * motion_texel));
+    vec2 motion = candidates[0];
+    float best_error = matchError(uv, motion);
+    for (int i = 1; i < 9; ++i) {
+        vec2 candidate = candidates[i];
+        float error = matchError(uv, candidate);
+        if (error < best_error * 0.9) {
+            best_error = error;
+            motion = candidate;
+        }
+    }
 
     // Forward and backward warped coordinates
-    vec2 forward_uv  = clamp(uv + motion * blend_factor,         0.0, 1.0);
-    vec2 backward_uv = clamp(uv - motion * (1.0 - blend_factor), 0.0, 1.0);
+    vec2 forward_raw  = uv + motion * blend_factor;
+    vec2 backward_raw = uv - motion * (1.0 - blend_factor);
+    vec2 forward_uv  = clamp(forward_raw,  0.0, 1.0);
+    vec2 backward_uv = clamp(backward_raw, 0.0, 1.0);
+    // A sample from outside the frame (motion off screen) would smear its edge.
+    float forward_inside  = forward_raw == forward_uv ? 1.0 : 0.0;
+    float backward_inside = backward_raw == backward_uv ? 1.0 : 0.0;
 
     vec4 forward_color  = texture(PreviousFrame, forward_uv);
     vec4 backward_color = texture(CurrentFrame,  backward_uv);
@@ -96,11 +172,42 @@ void main() {
     float alpha = mix(blend_factor, 0.5, occlusion * 0.4);
     vec4 interpolated = mix(forward_color, backward_color, alpha);
 
+    // Static pixels (HUD over a moving scene): unchanged between the frames, here and around.
+    // A moving pixel ignores a warped sample that lands on one, else the HUD is copied along the
+    // flow of what moves behind it.
+    float change = 0.0;
+    const vec2 cross_offsets[5] = vec2[](vec2(0.0), vec2(-1.0, 0.0), vec2(1.0, 0.0),
+                                         vec2(0.0, -1.0), vec2(0.0, 1.0));
+    for (int i = 0; i < 5; ++i) {
+        change = max(change, frameChange(uv + cross_offsets[i] * inv_render_size));
+    }
+    float moving = smoothstep(0.01, 0.03, change);
+    // A sample is only trusted where the flow moves the way this pixel does: beside something
+    // the camera follows, the background's motion makes one sample land on it (still on screen)
+    // and blending that in leaves a copy of it half the motion away on each side.
+    // Each sample is checked against its own frame's flow: the previous frame's content where
+    // the previous sample lands, the current frame's where the current one does.
+    float forward_consistent = motionConsistency(previousFrameMotion(forward_uv), motion);
+    float backward_consistent =
+        motionConsistency(texture(MotionVectors, backward_uv).xy * motion_scale, motion);
+    float forward_weight = (1.0 - alpha) * (1.0 - moving * staticWeight(forward_uv)) *
+                           forward_inside * (forward_consistent + 0.01);
+    float backward_weight = alpha * (1.0 - moving * staticWeight(backward_uv)) *
+                            backward_inside * (backward_consistent + 0.01);
+    vec4 center_color = mix(texture(PreviousFrame, uv), texture(CurrentFrame, uv), blend_factor);
+    if (forward_weight + backward_weight > 1e-3) {
+        interpolated = (forward_color * forward_weight + backward_color * backward_weight) /
+                       (forward_weight + backward_weight);
+    } else {
+        interpolated = center_color;
+    }
+
     // ΓöÇΓöÇ Anti-flicker: blend with un-warped centre pixel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     float motion_magnitude = length(motion * render_size);
     float direct_weight = exp(-motion_magnitude * 0.5);
-    vec4 center_color = mix(texture(PreviousFrame, uv), texture(CurrentFrame, uv), blend_factor);
     interpolated = mix(interpolated, center_color, direct_weight * 0.3);
+    // Unchanged pixels stay where they are.
+    interpolated = mix(interpolated, center_color, 1.0 - moving);
 
     imageStore(OutGeneratedFrame, pixel_coord, interpolated);
 }

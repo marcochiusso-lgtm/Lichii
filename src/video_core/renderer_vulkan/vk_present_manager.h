@@ -42,6 +42,10 @@ struct Frame {
     /// Time the present thread leaves before presenting the next frame. Frame generation sets it
     /// on generated frames, so they share the screen time evenly with the real ones.
     std::chrono::nanoseconds present_spacing{};
+    /// Frame generation on the device's compute queue: the frame is shown only once its fence
+    /// signals, so the graphics queue never waits for it.
+    bool generated_async{};
+    vk::Fence generated_ready;
 };
 
 class PresentManager {
