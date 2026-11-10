@@ -150,6 +150,7 @@ add_executable(tests
     common/event.cpp
     common/fibers.cpp
     common/fs_iterate.cpp
+    frontend_common/install_keys.cpp
     common/game_presets.cpp
     common/host_memory.cpp
     common/host_memory_failure.cpp
