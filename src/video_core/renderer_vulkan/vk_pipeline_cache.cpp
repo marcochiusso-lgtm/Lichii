@@ -1598,7 +1598,10 @@ void PipelineCache::LoadPipelinesV2(u64 title_id,
     // With the precache, the prebuild starts after it.
     size_t deferred_pipelines = 0;
     const auto start_prebuild = [&] {
-        for (PrebuildRecord& record : prebuild) {
+        // Newest first: the log appends, so its end holds what the latest sessions found, which
+        // the game is likelier to need soon than its oldest records.
+        for (auto it = prebuild.rbegin(); it != prebuild.rend(); ++it) {
+            PrebuildRecord& record = *it;
             const u64 bytes = record.payload.size();
             const bool added = scheduled_prebuild->Add(
                 record.key, bytes, TranslationBytes(bytes), DriverCompileBytes,
