@@ -36,6 +36,13 @@ inline NvResult Nx2UnknownIoctl(const char* device, Ioctl command, std::span<con
 // the memory at GPU address == CPU address, and NormalMapGpuMemory4K (211) maps a memory handle at
 // a chosen GPU address (also in sparse regions). Every nvhost-as-gpu address space applies each
 // mapping, including ones made before the address space existed.
+//
+// Listeners are called outside `mutex`: a listener can call back into the emulator
+// (GPU::MapInOrder waits for the GPU thread, and the GPU thread's back reaches the registry
+// from BackSparseWrite through BackSparse), so holding `mutex` across the call deadlocks
+// (guest: MapAt under `mutex` waits for the GPU thread that waits for `mutex`). The map is
+// copied under the lock and the listeners run after it is released; AddListener's replay of
+// existing mappings stays under the lock, where it is atomic against MapAt.
 class Nx2GpuMemoryRegistry {
 public:
     using Listener = std::function<void(u64 gpu_address, u64 cpu_address, u64 size)>;
@@ -63,49 +70,55 @@ public:
     }
 
     void MapAt(u32 handle, u64 offset, u64 gpu_address, u64 cpu_address, u64 size) {
-        std::scoped_lock lk{mutex};
-        TrimMappings(gpu_address, size);
-        mappings.push_back({gpu_address, cpu_address, size, handle, offset});
-        for (auto& [owner, listener] : listeners) {
-            listener.map(gpu_address, cpu_address, size);
+        {
+            std::scoped_lock lk{mutex};
+            TrimMappings(gpu_address, size);
+            mappings.push_back({gpu_address, cpu_address, size, handle, offset});
         }
+        NotifyListeners(&Listeners::map, gpu_address, cpu_address, size);
     }
 
     // NormalUnmapGpuMemory4K, or destroying the memory: the GPU range stops reaching it.
     void Unmap(u64 gpu_address, u64 size) {
-        std::scoped_lock lk{mutex};
-        TrimMappings(gpu_address, size);
-        for (auto& [owner, listener] : listeners) {
-            listener.unmap(gpu_address, size);
+        {
+            std::scoped_lock lk{mutex};
+            TrimMappings(gpu_address, size);
         }
+        NotifyListeners(&Listeners::unmap, gpu_address, size);
     }
 
     // Memory [cpu_address, +size) is destroyed (sub 102): every GPU range that still reaches it
     // stops reaching it, wherever it was mapped, because the game reuses the memory right after.
     // Returns the ranges other than the one at the memory's own address, as (GPU address, size).
     std::vector<std::pair<u64, u64>> UnmapMemory(u64 cpu_address, u64 size) {
-        std::scoped_lock lk{mutex};
-        const u64 end = cpu_address + size;
-        struct Range {
+        struct Unmapped {
             u64 gpu_address;
             u64 size;
             bool own; ///< The mapping at the memory's own address
         };
-        std::vector<Range> ranges;
-        for (const auto& m : mappings) {
-            const u64 first = (std::max)(m.cpu_address, cpu_address);
-            const u64 last = (std::min)(m.cpu_address + m.size, end);
-            if (first < last) {
-                ranges.push_back({m.gpu_address + (first - m.cpu_address), last - first,
-                                  m.gpu_address == m.cpu_address});
+        std::vector<Unmapped> unmapped; ///< Every range that stopped reaching the memory
+        {
+            std::scoped_lock lk{mutex};
+            const u64 end = cpu_address + size;
+            for (const auto& m : mappings) {
+                const u64 first = (std::max)(m.cpu_address, cpu_address);
+                const u64 last = (std::min)(m.cpu_address + m.size, end);
+                if (first < last) {
+                    unmapped.push_back({m.gpu_address + (first - m.cpu_address), last - first,
+                                        m.gpu_address == m.cpu_address});
+                }
+            }
+            for (const auto& range : unmapped) {
+                TrimMappings(range.gpu_address, range.size);
             }
         }
+        for (const auto& range : unmapped) {
+            NotifyListeners(&Listeners::unmap, range.gpu_address, range.size);
+        }
+        // The ranges other than the one at the memory's own address, for the caller.
         std::vector<std::pair<u64, u64>> leftovers;
-        for (const auto& range : ranges) {
-            TrimMappings(range.gpu_address, range.size);
-            for (auto& [owner, listener] : listeners) {
-                listener.unmap(range.gpu_address, range.size);
-            }
+        leftovers.reserve(unmapped.size());
+        for (const auto& range : unmapped) {
             if (!range.own) {
                 leftovers.emplace_back(range.gpu_address, range.size);
             }
@@ -120,12 +133,7 @@ public:
             std::scoped_lock lk{device_mutex};
             device_ranges.erase(cpu_address);
         }
-        std::scoped_lock lk{mutex};
-        for (auto& [owner, listener] : listeners) {
-            if (listener.release) {
-                listener.release(cpu_address, size);
-            }
-        }
+        NotifyListeners(&Listeners::release, cpu_address, size);
     }
 
     // Sparse regions (nx2:gpu 214 with the sparse flag): the GPU range reaches device memory of its
@@ -133,32 +141,23 @@ public:
     // The GPU mapping never changes, so the texture cache doesn't rebuild the images over it as
     // blocks get memory; unbacked blocks read zero.
     void CreateSparse(u64 gpu_address, u64 size) {
-        std::scoped_lock lk{mutex};
-        sparse_regions[gpu_address] = size;
-        for (auto& [owner, listener] : listeners) {
-            if (listener.sparse) {
-                listener.sparse(gpu_address, size, true);
-            }
+        {
+            std::scoped_lock lk{mutex};
+            sparse_regions[gpu_address] = size;
         }
+        NotifyListeners(&Listeners::sparse, gpu_address, size, true);
     }
 
     void DestroySparse(u64 gpu_address, u64 size) {
-        std::scoped_lock lk{mutex};
-        sparse_regions.erase(gpu_address);
-        for (auto& [owner, listener] : listeners) {
-            if (listener.sparse) {
-                listener.sparse(gpu_address, size, false);
-            }
+        {
+            std::scoped_lock lk{mutex};
+            sparse_regions.erase(gpu_address);
         }
+        NotifyListeners(&Listeners::sparse, gpu_address, size, false);
     }
 
     void BackSparse(u64 gpu_address, u64 cpu_address, u64 size) {
-        std::scoped_lock lk{mutex};
-        for (auto& [owner, listener] : listeners) {
-            if (listener.back) {
-                listener.back(gpu_address, cpu_address, size);
-            }
-        }
+        NotifyListeners(&Listeners::back, gpu_address, cpu_address, size);
     }
 
     // nx2:gpu 216 (sparse map requests): the tile [gpu_address, +size) of a sparse region now
@@ -166,12 +165,7 @@ public:
     // cpu_address 0 it is unmapped and reads zero. The GPU mapping stays as it is; only the
     // region's device pages change, in GPU-thread order.
     void MapSparseTile(u64 gpu_address, u64 cpu_address, u64 size) {
-        std::scoped_lock lk{mutex};
-        for (auto& [owner, listener] : listeners) {
-            if (listener.tile) {
-                listener.tile(gpu_address, cpu_address, size);
-            }
-        }
+        NotifyListeners(&Listeners::tile, gpu_address, cpu_address, size);
     }
 
     void AddListener(const void* owner, Listener listener, UnmapListener unmap_listener,
@@ -355,6 +349,26 @@ private:
     std::vector<Mapping> mappings;
     std::map<u64, u64> sparse_regions; ///< GPU address -> size
     std::map<const void*, Listeners> listeners;
+
+    // Calls every registered listener outside `mutex` (see the class comment): copies the
+    // listener functions under the lock, releases it, then calls them in owner order. A null
+    // member of a listener is skipped, as before.
+    template <typename Member, typename... Args>
+    void NotifyListeners(Member member, Args... args) {
+        std::vector<std::function<void()>> calls;
+        {
+            std::scoped_lock lk{mutex};
+            calls.reserve(listeners.size());
+            for (auto& [owner, listener] : listeners) {
+                if (auto& fn = listener.*member) {
+                    calls.push_back([fn, args...]() { fn(args...); });
+                }
+            }
+        }
+        for (auto& call : calls) {
+            call();
+        }
+    }
 };
 
 // Device node that Switch 2 nvgpu drivers open but Switch 1 never had (e.g. /dev/nvhost-tsg-gpu).
