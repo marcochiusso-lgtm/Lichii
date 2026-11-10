@@ -126,6 +126,7 @@ public:
         LEGACY_PATH(Sudachi, SUDACHI)
         LEGACY_PATH(Yuzu, YUZU)
         LEGACY_PATH(Suyu, SUYU)
+        LEGACY_PATH(LegacyEden, EDEN_LEGACY)
 #undef LEGACY_PATH
 #elif __ANDROID__
         ASSERT(!eden_path.empty());
@@ -148,6 +149,7 @@ public:
         LEGACY_PATH(Sudachi, SUDACHI)
         LEGACY_PATH(Yuzu, YUZU)
         LEGACY_PATH(Suyu, SUYU)
+        LEGACY_PATH(LegacyEden, EDEN_LEGACY)
 #undef LEGACY_PATH
 #endif
         // data

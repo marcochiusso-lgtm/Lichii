@@ -15,9 +15,11 @@
 #include "yuzu/migration_dialog.h"
 
 // Needs to be included at the end due to https://bugreports.qt.io/browse/QTBUG-73263
+#include <algorithm>
 #include <filesystem>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QEventLoop>
 #include <QGuiApplication>
 #include <QProgressDialog>
 #include <QRadioButton>
@@ -78,6 +80,13 @@ void UserDataMigrator::ShowMigrationPrompt(QMainWindow* main_window) {
         return;
     }
 
+    // Lichii used Eden's directory before it had its own, so a shader cache there is its own.
+    if (std::ranges::any_of(found, [](const Emulator& emu) {
+            return emu.e_user_dir == Common::FS::LegacyEdenDir;
+        })) {
+        clear_shaders->setChecked(false);
+    }
+
     // makes my life easier
     qRegisterMetaType<Emulator>();
 
@@ -103,7 +112,8 @@ void UserDataMigrator::ShowMigrationPrompt(QMainWindow* main_window) {
 
     QAbstractButton* button = migration_prompt.clickedButton();
 
-    if (button->text() == QObject::tr("No")) {
+    // Esc or closing the window rejects the dialog without a clicked button, the same as No.
+    if (button == nullptr || button->text() == QObject::tr("No")) {
         return ShowMigrationCancelledMessage(main_window);
     }
 
@@ -111,6 +121,7 @@ void UserDataMigrator::ShowMigrationPrompt(QMainWindow* main_window) {
         static_cast<MigrationWorker::MigrationStrategy>(group->checkedId());
 
     selected_emu = button->property("emulator").value<Emulator>();
+    migration_strategy = strategy;
 
     MigrateUserData(main_window, clear_shaders->isChecked(), strategy);
 }
@@ -132,6 +143,7 @@ void UserDataMigrator::MigrateUserData(QMainWindow* main_window, const bool clea
     progress->setLabelText(QObject::tr("Migrating, this may take a while..."));
     progress->setRange(0, 0);
     progress->setCancelButton(nullptr);
+    progress->setWindowFlag(Qt::WindowCloseButtonHint, false);
     progress->setWindowModality(Qt::WindowModality::ApplicationModal);
 
     QThread* thread = new QThread(main_window);
@@ -140,19 +152,33 @@ void UserDataMigrator::MigrateUserData(QMainWindow* main_window, const bool clea
 
     thread->connect(thread, &QThread::started, worker, &MigrationWorker::process);
 
-    thread->connect(worker, &MigrationWorker::finished, progress,
-                    [=, this](const QString& success_text, const std::string& path) {
-                        progress->close();
-                        QMessageBox::information(main_window, QObject::tr("Migration"),
-                                                 success_text, QMessageBox::Ok);
+    // The worker can't be stopped, so wait for it rather than for the dialog, and show the dialog
+    // again if Esc closes it before the worker is done.
+    QEventLoop loop;
+    bool worker_done = false;
+    QObject::connect(progress, &QDialog::rejected, progress, [progress, &worker_done] {
+        if (!worker_done) {
+            progress->show();
+        }
+    });
 
-                        migrated = true;
-                        thread->quit();
-                    });
+    thread->connect(
+        worker, &MigrationWorker::finished, progress,
+        [=, this, &loop, &worker_done](const QString& success_text, const std::string& path) {
+            worker_done = true;
+            progress->close();
+            QMessageBox::information(main_window, QObject::tr("Migration"), success_text,
+                                     QMessageBox::Ok);
+
+            migrated = true;
+            thread->quit();
+            loop.quit();
+        });
 
     thread->connect(worker, &MigrationWorker::finished, worker, &QObject::deleteLater);
     thread->connect(thread, &QThread::finished, thread, &QObject::deleteLater);
 
     thread->start();
-    progress->exec();
+    progress->show();
+    loop.exec();
 }

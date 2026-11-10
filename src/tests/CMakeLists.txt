@@ -152,6 +152,7 @@ add_executable(tests
     common/cityhash.cpp
     common/container_hash.cpp
     common/core_pinning.cpp
+    common/data_directories.cpp
     common/event.cpp
     common/fibers.cpp
     common/fs_iterate.cpp
