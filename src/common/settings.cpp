@@ -238,6 +238,10 @@ void SetCurrentProgramIsSwitch2(bool is_switch2) {
     current_program_is_switch2 = is_switch2;
 }
 
+bool ReactiveFlushing() {
+    return values.use_reactive_flushing.GetValue() || values.force_reactive_flushing;
+}
+
 bool CurrentProgramIsSwitch2() {
     return current_program_is_switch2;
 }
