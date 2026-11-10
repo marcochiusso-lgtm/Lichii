@@ -351,9 +351,20 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
     if (nacp_file != nullptr) {
         control.emplace(nacp_file);
         name = control->GetApplicationName();
-    } else if (sidecar_dirs.size() > 1 && Common::ToLower(file_dir->GetName()) == "exefs") {
-        // Without control data, name the game after its folder like the game list does
-        name = sidecar_dirs.back()->GetName();
+    } else if (Common::ToLower(file_dir->GetName()) == "exefs") {
+        auto game_dir = file_dir->GetParentDirectory();
+        if (game_dir != nullptr) {
+            const auto folder = Common::ToLower(game_dir->GetName());
+            if (folder == "base" || folder == "update") {
+                game_dir = game_dir->GetParentDirectory();
+            } else if (const auto parent = game_dir->GetParentDirectory();
+                       parent != nullptr && Common::ToLower(parent->GetName()) == "updates") {
+                game_dir = parent->GetParentDirectory();
+            }
+            if (game_dir != nullptr) {
+                name = game_dir->GetName();
+            }
+        }
     }
 
     romfs_exefs_dir = file_dir;
